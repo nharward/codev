@@ -125,7 +125,7 @@ test.describe('Work view: backlog clickability and artifacts', () => {
       for (let i = 0; i < artifactCount; i++) {
         const link = artifactLinks.nth(i);
         const text = await link.textContent();
-        expect(['spec', 'plan', 'review']).toContain(text);
+        expect(['spec', 'plan', 'review', 'PR']).toContain(text);
       }
     }
   });

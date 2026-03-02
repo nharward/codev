@@ -1026,6 +1026,17 @@
         }
       }
 
+      // Abort SSE connection on page unload to free connection slots.
+      // fetch+ReadableStream SSE doesn't auto-close like EventSource,
+      // so without this, reloads leak connections until Chrome's 6-per-origin
+      // limit is exhausted and all subsequent fetches queue forever.
+      window.addEventListener('beforeunload', () => {
+        if (sseController) {
+          sseController.abort();
+          sseController = null;
+        }
+      });
+
       // Subscribe to SSE for push notifications
       subscribeToEvents();
 

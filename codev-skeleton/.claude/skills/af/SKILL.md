@@ -1,122 +1,146 @@
 ---
 name: af
-description: Agent Farm CLI quick reference. Use when running af commands to check correct syntax, subcommands, and flags. Prevents guessing at command names.
-disable-model-invocation: false
+description: Agent Farm CLI — the tool for spawning builders, managing Tower, workspaces, and cron tasks. ALWAYS consult this skill BEFORE running any `af` command to get the exact syntax. This prevents wasting time guessing flags that don't exist. Use this whenever you need to spawn a builder, check status, send messages, clean up worktrees, manage Tower, or run cron tasks. If you're about to type `af` followed by anything, check here first.
 ---
 
-# Agent Farm Quick Reference
+# Agent Farm CLI
 
-## Tower (Dashboard Server)
+## af spawn
+
+Spawns a new builder in an isolated git worktree.
+
+```
+af spawn [number] [options]
+```
+
+**The ONLY flags that exist:**
+
+| Flag | Description |
+|------|-------------|
+| `--protocol <name>` | Protocol: spir, aspir, air, bugfix, tick, maintain, experiment. **Required for numbered spawns.** |
+| `--task <text>` | Ad-hoc task (no issue number needed) |
+| `--shell` | Bare Claude session |
+| `--worktree` | Bare worktree session |
+| `--amends <number>` | Original spec number (TICK only) |
+| `--files <files>` | Context files, comma-separated. **Requires `--task`.** |
+| `--no-comment` | Skip commenting on the GitHub issue |
+| `--force` | Skip dirty-worktree and collision checks |
+| `--soft` | Soft mode (AI follows protocol, you verify) |
+| `--strict` | Strict mode (porch orchestrates) — this is the default |
+| `--resume` | Resume builder in existing worktree |
+| `--no-role` | Skip loading role prompt |
+
+**There is NO `-t`, `--title`, `--name`, or `--branch` flag.** The branch name is auto-generated from the issue title.
+
+**Examples:**
+```bash
+af spawn 42 --protocol spir           # SPIR builder for issue #42
+af spawn 42 --protocol aspir          # ASPIR (autonomous, no human gates)
+af spawn 42 --protocol air            # AIR (small features)
+af spawn 42 --protocol bugfix         # Bugfix
+af spawn 42 --protocol tick --amends 30  # TICK amendment to spec 30
+af spawn 42 --protocol spir --soft    # Soft mode
+af spawn 42 --resume                  # Resume existing builder
+af spawn --task "fix the flaky test"  # Ad-hoc task (no issue)
+af spawn 42 --protocol spir --force   # Skip dirty-worktree check
+```
+
+**Pre-spawn checklist:**
+1. `git status` — worktree must be clean (or use `--force`)
+2. Commit specs/plans first — builders branch from HEAD and can't see uncommitted files
+3. `--protocol` is required for numbered spawns
+
+## af send
+
+Sends a message to a running builder.
+
+```
+af send [builder] [message]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--all` | Send to all builders |
+| `--file <path>` | Include file content |
+| `--interrupt` | Send Ctrl+C first |
+| `--raw` | Skip structured formatting |
+| `--no-enter` | Don't press Enter after message |
 
 ```bash
-af tower start             # Start Tower on port 4100
-af tower stop              # Stop Tower
-af tower log               # Tail Tower logs
-af tower status            # Check if Tower is running
+af send 0042 "PR approved, please merge"
+af send 0585 "check the test output" --file /tmp/test-results.txt
+```
+
+## af cleanup
+
+Removes a builder's worktree and branch after work is done.
+
+```
+af cleanup [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `-p, --project <id>` | Builder project ID (no leading zeros: `585` not `0585`) |
+| `-i, --issue <number>` | Cleanup bugfix builder by issue number |
+| `-t, --task <id>` | Cleanup task builder (e.g., `task-bEPd`) |
+| `-f, --force` | Force cleanup even if branch not merged |
+
+```bash
+af cleanup -p 585              # Clean up project 585
+af cleanup -p 585 -f           # Force (unmerged branch)
+```
+
+**Note:** `af cleanup` uses plain numbers (`585`), not zero-padded (`0585`). But `af send` uses zero-padded IDs (`0585`).
+
+## af status
+
+```bash
+af status                      # Show all builders and workspace status
+```
+
+No flags needed. Shows Tower status, workspace, and all active builders.
+
+## af tower
+
+```bash
+af tower start                 # Start Tower on port 4100
+af tower stop                  # Stop Tower
+af tower log                   # Tail Tower logs
+af tower status                # Check daemon and cloud connection status
+af tower connect               # Connect to Codev Cloud
+af tower disconnect            # Disconnect from Codev Cloud
 ```
 
 There is NO `af tower restart` — use `af tower stop && af tower start`.
 
-## Workspace
+## af workspace
 
 ```bash
-af workspace start         # Start workspace for current project
-af workspace stop          # Stop workspace for current project
+af workspace start             # Start workspace for current project
+af workspace stop              # Stop workspace processes
 ```
 
-> **Deprecated alias:** `af dash` still works but prints a deprecation warning.
+`af dash` is a deprecated alias — use `af workspace` instead.
 
-## Builder Management
+## af cron
 
 ```bash
-af spawn 3 --protocol spir     # Spawn builder for SPIR project
-af spawn 3 --protocol spir --soft  # Spawn builder (soft mode)
-af spawn 3 --protocol bugfix   # Spawn builder for a bugfix
-af spawn 3 --resume            # Resume builder in existing worktree
-af status                      # Check all builder status
-af cleanup --project 3         # Clean up builder worktree (safe)
-af cleanup --project 3 -f      # Force cleanup
+af cron list                   # List all cron tasks
+af cron status <name>          # Check task status
+af cron run <name>             # Run immediately
+af cron enable <name>          # Enable
+af cron disable <name>         # Disable
 ```
 
-### Resuming Builders
+There is NO `af cron add` — create YAML files in `.af-cron/` directly.
 
-When a builder's Claude process dies but the worktree and porch state survive,
-use `--resume` to restart it without recreating the worktree:
+## Other commands
 
 ```bash
-af spawn 3 --resume
+af open <file>                 # Open file in annotation viewer (NOT system open)
+af shell                       # Spawn utility shell
+af attach                      # Attach to running builder terminal
+af rename <name>               # Rename current shell session
+af architect                   # Start architect session in current terminal
 ```
-
-This reuses the existing `.builders/3` worktree, creates a fresh terminal
-session registered with the Tower (so it appears in the workspace overview), and lets
-porch pick up from whatever phase the builder was in. Works with all spawn
-modes: positional issue number, `--task`, `--protocol`, `--worktree`.
-
-## Cron (Scheduled Tasks)
-
-Cron tasks are YAML files in `.af-cron/` at the project root. Tower loads them automatically.
-
-```bash
-af cron list               # List all cron tasks
-af cron status <name>      # Check status of a specific task
-af cron run <name>         # Run a task immediately
-af cron enable <name>      # Enable a disabled task
-af cron disable <name>     # Disable a task
-```
-
-There is NO `af cron add` — create YAML files in `.af-cron/` directly. Example:
-
-```yaml
-# .af-cron/ci-health.yaml
-name: CI Health Check
-schedule: "*/30 * * * *"
-enabled: true
-command: gh run list --limit 5 --json status,conclusion --jq '...'
-condition: "output != '0'"
-message: "CI Alert: ${output} recent failure(s)"
-target: architect
-timeout: 30
-```
-
-## Utility
-
-```bash
-af util                    # Open utility shell
-af open file.ts            # Open file in annotation viewer
-af ports list              # List port allocations
-af send <builder> "msg"    # Send message to a builder
-```
-
-## Configuration
-
-Edit `af-config.json` at project root to customize shell commands.
-
-```json
-{
-  "shell": {
-    "architect": "claude",
-    "builder": "claude",
-    "shell": "bash"
-  }
-}
-```
-
-## Pre-Spawn Checklist
-
-**Before every `af spawn`:**
-
-1. **`git status`** — Check for uncommitted changes
-2. **Commit if dirty** — Builders branch from HEAD; uncommitted specs/plans are invisible
-3. **Include `--protocol`** — It is **REQUIRED** for all numbered spawns (e.g., `af spawn 42 --protocol spir`)
-
-The spawn command will refuse if the worktree is dirty (override with `--force`,
-but the builder won't see uncommitted files).
-
-## Common Mistakes
-
-- **Forgetting `--protocol`** — `af spawn 42` fails; use `af spawn 42 --protocol spir` (or bugfix, tick, etc.)
-- **Spawning with uncommitted changes** — builder won't see specs, plans, or codev updates
-- **Running `git pull` after spawn failure** — Usually unnecessary; check `git status` first, commit, then retry
-- There is NO `codev tower` command — Tower is managed via `af tower`
-- There is NO `restart` subcommand — stop then start
-- There is NO `af start` for Tower — use `af tower start` or `af workspace start`

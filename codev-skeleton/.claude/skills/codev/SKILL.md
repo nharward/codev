@@ -1,42 +1,59 @@
 ---
 name: codev
-description: Codev project management CLI quick reference. Use when running codev commands to check correct syntax for init, adopt, update, and doctor.
-disable-model-invocation: false
+description: Codev project management CLI — init, adopt, update, and doctor commands. Check this skill before running any `codev` command (except `consult`, `porch`, or `af` which have their own skills). Use when setting up new projects, adding codev to existing repos, updating framework files, or diagnosing missing dependencies.
 ---
 
 # codev - Project Management CLI
 
 ## Commands
 
-```bash
-codev init [name]          # Create a new codev project
-codev init my-app -y       # Non-interactive with defaults
-codev adopt                # Add codev to existing project (run from project root)
-codev adopt -y             # Skip conflict prompts
-codev update               # Update protocols, roles, skills from installed package
-codev update --dry-run     # Preview changes without applying
-codev update --force       # Force overwrite all framework files
-codev update --agent       # Agent mode: JSON output on stdout, no interactive merge
-codev doctor               # Check system dependencies
+```
+codev init [project-name]      Create a new codev project directory
+codev adopt                    Add codev to the current directory
+codev update                   Update protocols, roles, skills from package
+codev doctor                   Check system dependencies
 ```
 
-## What Each Command Does
+## codev init
 
-### codev init
-Creates a new project directory with codev structure: specs/, plans/, reviews/, protocols, CLAUDE.md, AGENTS.md, .claude/skills/, af-config.json, .gitignore.
+Creates a **new directory** with the full codev structure: specs/, plans/, reviews/, protocols, CLAUDE.md, AGENTS.md, .claude/skills/, af-config.json, .gitignore.
 
-### codev adopt
-Adds codev to the **current directory**. Detects existing CLAUDE.md/AGENTS.md and creates `.codev-new` versions for merge if conflicts exist. Spawns Claude to merge automatically.
+```bash
+codev init my-app              # Interactive setup
+codev init my-app -y           # Non-interactive with defaults
+```
 
-### codev update
-Updates framework files (protocols, roles, skills) from the installed `@cluesmith/codev` package. **Never touches user data** (specs, plans, reviews). If you've customized a framework file, creates a `.codev-new` version for manual merge. Use `--agent` for structured JSON output on stdout (logs go to stderr, no interactive Claude merge).
+## codev adopt
 
-### codev doctor
-Checks that all required dependencies are installed: Node.js (>=18), git (>=2.5), gh (authenticated), and at least one AI CLI (Claude, Gemini, or Codex).
+Adds codev to the **current directory** (existing project). Run from the project root. If CLAUDE.md or AGENTS.md already exists, creates `.codev-new` versions and spawns Claude to merge.
 
-## Common Mistakes
+```bash
+codev adopt                    # Interactive
+codev adopt -y                 # Skip conflict prompts
+```
 
-- There is NO `codev tower` command — Tower is managed via `af tower start` / `af tower stop`
-- `codev init` creates a **new directory** — use `codev adopt` for existing projects
-- `codev update` only updates framework files — it will never overwrite your specs/plans/reviews
-- Always run `codev adopt` and `codev update` from the **project root directory**
+## codev update
+
+Updates framework files (protocols, roles, skills) from the installed `@cluesmith/codev` package. **Never touches user data** (specs, plans, reviews). Creates `.codev-new` versions for customized files.
+
+```bash
+codev update                   # Interactive update
+codev update --dry-run         # Preview changes
+codev update --force           # Overwrite all framework files
+codev update --agent           # Agent mode: JSON stdout, no interactive merge
+```
+
+## codev doctor
+
+Checks all required dependencies: Node.js (>=18), git (>=2.5), gh (authenticated), and at least one AI CLI (Claude, Gemini, or Codex).
+
+```bash
+codev doctor
+```
+
+## Common mistakes
+
+- There is NO `codev tower` command — use `af tower start/stop`
+- `codev init` creates a new directory — use `codev adopt` for existing projects
+- Always run `codev adopt` and `codev update` from the project root
+- `codev update` only updates framework files — it never touches specs/plans/reviews

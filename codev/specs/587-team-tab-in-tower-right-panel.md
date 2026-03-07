@@ -9,10 +9,10 @@
 ## Clarifying Questions Asked
 
 1. **What data should appear per team member?** — Name, GitHub handle, role, assigned issues, open PRs, recent activity (PR merges, issue closes).
-2. **Where do team member definitions live?** — New `codev/team/` directory with one `.md` file per member, using YAML frontmatter for structured data (name, github, role).
+2. **Where do team member definitions live?** — New `codev/team/people/` directory with one `.md` file per member, using YAML frontmatter for structured data (name, github, role).
 3. **Is this read-only or interactive?** — Read-only for v1 (GitHub data and messages). Future work includes richer inter-architect messaging.
 4. **How fresh should the data be?** — Fetch-on-activation pattern (like Analytics tab), not polling. Manual refresh button for explicit re-fetch.
-5. **Should it work without `codev/team/` files?** — Yes, show an empty state with instructions on how to add team members.
+5. **Should the tab show without team members?** — No. Team tab only appears if `codev/team/` exists AND `codev/team/people/` has at least 2 member files. No empty state — the tab simply doesn't show.
 6. **What about team communication?** — A `codev/team/messages.md` append-only log allows team members to post timestamped messages. These are displayed in the Team tab.
 
 ## Problem Statement
@@ -25,14 +25,17 @@ The Tower dashboard currently has no visibility into team composition or what ot
 - No concept of "team" exists in the dashboard or data model
 - Team coordination happens outside the tool (Slack, meetings, etc.)
 - No `codev/team/` directory convention exists
+- No CLI tooling for team interactions
 
 ## Desired State
 
 - A new **Team** tab in the Tower dashboard (main tab area alongside Work and Analytics)
-- Each team member defined in a `codev/team/<github-handle>.md` file with YAML frontmatter
+- Tab only appears when `codev/team/` exists with 2+ member files in `people/` — no empty state
+- Each team member defined in a `codev/team/people/<github-handle>.md` file with YAML frontmatter
 - The tab displays per-member: assigned issues, open PRs, and recent GitHub activity
 - A `codev/team/messages.md` append-only message log displayed in the Team tab for team communication
-- Empty state guides users to create team member files
+- New `af team` CLI commands for team interactions (message, list)
+- Communication channel abstraction designed for extensibility (messages.md now, Slack/other channels later)
 - Foundation for richer inter-architect messaging in the future
 
 ## Stakeholders
@@ -41,15 +44,17 @@ The Tower dashboard currently has no visibility into team composition or what ot
 - **Technical Team**: Codev maintainers
 
 ## Success Criteria
-- [ ] New `codev/team/` directory convention with documented file format
-- [ ] Team tab appears in Tower dashboard tab bar alongside Work and Analytics (always visible, shows empty state when no team files)
+- [ ] New `codev/team/people/` directory convention with documented file format
+- [ ] Team tab appears in Tower dashboard tab bar only when `codev/team/` exists with 2+ member files in `people/`
 - [ ] Tab loads team member files and displays parsed frontmatter (name, role, GitHub handle)
 - [ ] Tab fetches and displays per-member GitHub data (assigned issues, open PRs, recent activity)
 - [ ] `codev/team/messages.md` append-only message log parsed and displayed in Team tab
-- [ ] Empty state shown when no team files exist, with guidance text
+- [ ] `af team message` CLI command appends a timestamped message to `messages.md`
+- [ ] `af team list` CLI command displays team members from `people/` directory
+- [ ] Communication channel abstraction supports messages.md as first channel, extensible to future channels
 - [ ] Manual refresh button works
 - [ ] Tab follows existing UI patterns (styling, layout, responsive behavior)
-- [ ] All new code has test coverage >90% (server, hooks, and UI layers)
+- [ ] All new code has test coverage >90% (server, hooks, CLI, and UI layers)
 - [ ] No regression in existing Tower functionality
 
 ## Constraints
@@ -62,22 +67,32 @@ The Tower dashboard currently has no visibility into team composition or what ot
 - Team member files use YAML frontmatter parsed with the same library used elsewhere (gray-matter or similar)
 
 ### Business Constraints
-- Read-only in v1 — no editing team files or messages from the UI (messages are appended via git)
+- Dashboard is read-only — no editing team files or messages from the UI. Messages are appended via `af team message` CLI.
 - No real-time presence or online status — just GitHub activity data and message log
 - Richer inter-architect messaging (e.g., inline replies, notifications) is out of scope for v1
+- Only the `file` (messages.md) communication channel is implemented in v1; Slack and other channels are future work
 
 ## Assumptions
 - The `gh` CLI is available and authenticated in the environment (same assumption as existing GitHub integrations)
-- Team member `.md` files are committed to the repo and available in the worktree
+- Team member `.md` files live in `codev/team/people/` and are committed to the repo
 - GitHub handles in team files are valid and correspond to real GitHub users
 
 ## Solution Approaches
 
 ### Approach 1: File-Based Team Directory with GitHub Integration (Recommended)
 
-**Description**: Each team member gets a `codev/team/<handle>.md` file with YAML frontmatter. The Tower backend reads these files, enriches with GitHub API data, and serves via a new `/api/team` endpoint. The frontend renders a new Team tab.
+**Description**: Each team member gets a `codev/team/people/<handle>.md` file with YAML frontmatter. The Tower backend reads these files, enriches with GitHub API data, and serves via a new `/api/team` endpoint. The frontend renders a new Team tab. A new `af team` CLI command provides team interactions. Communication uses a channel abstraction for extensibility.
 
-**Team member file format** (`codev/team/<github-handle>.md`):
+**Directory structure**:
+```
+codev/team/
+  people/           # One .md file per team member
+    wkhan.md
+    jdoe.md
+  messages.md       # Append-only message log (first communication channel)
+```
+
+**Team member file format** (`codev/team/people/<github-handle>.md`):
 ```yaml
 ---
 name: Waleed Khan
@@ -113,6 +128,30 @@ Each message is a block separated by `---`, with a header line of `**<github-han
 - **Recent activity** (last 7 days): PRs merged (`author:<handle> is:pr is:merged merged:>YYYY-MM-DD`) and issues closed (`assignee:<handle> is:issue is:closed closed:>YYYY-MM-DD`). Commits are excluded (too noisy, available via PR context).
 
 For performance, use a single batched GraphQL query via `gh api graphql` (see existing pattern in `src/lib/github.ts` `fetchOnItTimestamps`). All member queries run in a single request to stay within the 2s target.
+
+**`af team` CLI commands**:
+```bash
+af team list                    # List team members from codev/team/people/
+af team message "your message"  # Append a timestamped message to codev/team/messages.md
+```
+
+`af team message` appends a new entry with the current user's GitHub handle (from `gh` CLI or git config), UTC timestamp, and the provided message text. The file is created with the header if it doesn't exist.
+
+**Communication channel abstraction**:
+
+Messages in the Team tab are sourced through a channel interface. v1 ships with a single channel (`file` — backed by `messages.md`), but the design supports adding future channels (e.g., Slack integration) without changing the UI or API contract.
+
+The `/api/team` endpoint returns messages as a flat list with a `channel` field:
+```typescript
+interface TeamMessage {
+  author: string;      // GitHub handle
+  timestamp: string;   // ISO 8601
+  body: string;
+  channel: string;     // "file" for messages.md, "slack" for future Slack, etc.
+}
+```
+
+The backend reads from all configured channels and merges messages chronologically. v1 only has the `file` channel. Adding a new channel means implementing a `MessageChannel` interface that returns `TeamMessage[]` — no UI changes needed.
 
 **Pros**:
 - Simple, version-controlled team definition
@@ -151,8 +190,11 @@ For performance, use a single batched GraphQL query via `gh api graphql` (see ex
 ## Open Questions
 
 ### Critical (Blocks Progress)
-- [x] File format for team member definitions — **Resolved**: YAML frontmatter in `.md` files
+- [x] File format for team member definitions — **Resolved**: YAML frontmatter in `.md` files under `codev/team/people/`
 - [x] Message log format — **Resolved**: Append-only `codev/team/messages.md` with `---`-separated entries
+- [x] Tab visibility rules — **Resolved**: Tab only shows when `codev/team/` exists with 2+ member files in `people/`. No empty state.
+- [x] CLI tooling for team interactions — **Resolved**: `af team message` and `af team list` subcommands
+- [x] Communication extensibility — **Resolved**: Channel abstraction with `MessageChannel` interface; `file` channel in v1
 
 ### Important (Affects Design)
 - [x] Should the tab be persistent or lazy? — **Resolved**: Fetch-on-activation (like Analytics), not polling. Only fetch when tab becomes active.
@@ -179,18 +221,24 @@ For performance, use a single batched GraphQL query via `gh api graphql` (see ex
 ## Test Scenarios
 
 ### Functional Tests
-1. Team tab always appears in TabBar (shows empty state when no team files exist)
-2. Each team member card shows name, role, GitHub handle from frontmatter
-3. Assigned issues (`assignee:`) and open PRs (`author:`) display correctly per member
-4. Recent activity section shows last 7 days of merged PRs and closed issues
-5. Refresh button triggers data re-fetch
-6. Malformed team files are skipped with warning (not crash)
-7. Team files with valid YAML but missing `github` field are skipped with warning
-8. Duplicate GitHub handles across files: first file wins, duplicate skipped with warning
-9. Invalid GitHub handle (no matching user) shows member card with "GitHub user not found" note
-10. Messages from `codev/team/messages.md` display in reverse chronological order
-11. Malformed message entries are skipped (not crash)
-12. Empty messages file or missing file shows "No messages yet" state
+1. Team tab does NOT appear when `codev/team/` directory is missing
+2. Team tab does NOT appear when `codev/team/people/` has fewer than 2 member files
+3. Team tab appears when `codev/team/people/` has 2+ valid member files
+4. Each team member card shows name, role, GitHub handle from frontmatter
+5. Assigned issues (`assignee:`) and open PRs (`author:`) display correctly per member
+6. Recent activity section shows last 7 days of merged PRs and closed issues
+7. Refresh button triggers data re-fetch
+8. Malformed team files are skipped with warning (not crash)
+9. Team files with valid YAML but missing `github` field are skipped with warning
+10. Duplicate GitHub handles across files: first file wins, duplicate skipped with warning
+11. Invalid GitHub handle (no matching user) shows member card with "GitHub user not found" note
+12. Messages from `codev/team/messages.md` display in reverse chronological order
+13. Malformed message entries are skipped (not crash)
+14. Missing messages file shows "No messages yet" state
+15. `af team list` displays all members from `people/` directory
+16. `af team message "text"` appends a correctly formatted entry to `messages.md`
+17. `af team message` creates `messages.md` with header if file doesn't exist
+18. Messages include `channel: "file"` field in API response
 
 ### Non-Functional Tests
 1. Tab renders within 2s for 10 team members (batched GraphQL)
@@ -200,7 +248,7 @@ For performance, use a single batched GraphQL query via `gh api graphql` (see ex
 
 ## Dependencies
 - **External Services**: GitHub API (via `gh` CLI or Octokit)
-- **Internal Systems**: Tower server (new `/api/team` endpoint), Dashboard React app
+- **Internal Systems**: Tower server (new `/api/team` endpoint), Dashboard React app, `af` CLI (new `team` subcommand)
 - **Libraries**: gray-matter (or existing YAML frontmatter parser), existing React component patterns
 
 ## Risks and Mitigation
@@ -220,8 +268,16 @@ For performance, use a single batched GraphQL query via `gh api graphql` (see ex
 - **Codex**: Tightened data scope definitions. Added edge cases for missing/duplicate/invalid GitHub fields. Clarified tab visibility (always show, empty state). Added XSS note for message rendering.
 - **Claude**: Fixed polling vs fetch-on-activation inconsistency. Clarified "right panel" terminology (these are main dashboard tabs). Added test scenarios for unauthenticated `gh` CLI and invalid handles. Noted batched GraphQL for performance target.
 
+**Architect revision** (2026-03-07):
+- Moved member files to `codev/team/people/` subdirectory
+- Tab only appears with 2+ member files (no empty state)
+- Added `af team` CLI commands (message, list)
+- Added communication channel abstraction for extensibility (messages.md is first channel, Slack etc. as future channels)
+
 ## Notes
 
 The `codev/team/` directory and file format should also be added to the `codev-skeleton/` template so new projects adopting codev get the convention. However, the skeleton update is a small follow-up and not core to this spec.
 
-The `codev/team/messages.md` append-only log is the foundation for inter-architect communication. v1 is read-only in the dashboard — messages are appended by team members directly (via git commits or `af send`-style tooling in the future). The team member file format is intentionally extensible — additional frontmatter fields can be added later without breaking existing files.
+The `codev/team/messages.md` append-only log is the foundation for inter-architect communication. v1 is read-only in the dashboard — messages are appended via `af team message`. The communication channel abstraction means adding Slack or other channels later requires only implementing the `MessageChannel` interface on the backend — no UI or API changes needed.
+
+The team member file format is intentionally extensible — additional frontmatter fields can be added later without breaking existing files.

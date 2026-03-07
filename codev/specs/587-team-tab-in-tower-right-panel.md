@@ -97,7 +97,7 @@ codev/team/
 **Team member file format** (`codev/team/people/<github-handle>.md`):
 ```yaml
 ---
-name: Waleed Khan
+name: Waleed Kadous
 github: wkhan
 role: architect
 ---

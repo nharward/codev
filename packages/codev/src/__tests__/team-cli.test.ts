@@ -135,4 +135,18 @@ describe('teamMessage', () => {
     const result = await loadMessages(messagesPath);
     expect(result.items[0].author).toBe('cron-bot');
   });
+
+  it('auto-detects author when not provided', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    // Without explicit author, detectAuthor will try gh then git config.
+    // In this test env, at least one should succeed and produce a non-empty string.
+    await teamMessage({ text: 'auto-detect test', cwd: tmpDir });
+
+    const messagesPath = path.join(tmpDir, 'codev', 'team', 'messages.md');
+    const result = await loadMessages(messagesPath);
+    expect(result.items).toHaveLength(1);
+    // Author should be a non-empty string (from gh or git config)
+    expect(result.items[0].author.length).toBeGreaterThan(0);
+  });
 });

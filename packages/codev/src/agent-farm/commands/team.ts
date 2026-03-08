@@ -19,10 +19,12 @@ function detectAuthor(cwd?: string): string {
     // Fall back to git config
   }
   try {
-    return execSync('git config user.name', { encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const name = execSync('git config user.name', { encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    if (name) return name;
   } catch {
-    return 'unknown';
+    // Fall through to default
   }
+  return 'unknown';
 }
 
 export async function teamList(options: { cwd?: string }): Promise<void> {

@@ -154,6 +154,20 @@ describe('loadTeamMembers', () => {
     expect(result.warnings).toContainEqual(expect.stringContaining('Malformed YAML'));
   });
 
+  it('skips files with invalid GitHub handles', async () => {
+    const teamDir = await createTeamDir({
+      'valid.md': '---\nname: Valid User\ngithub: valid-user\n---',
+      'bad-spaces.md': '---\nname: Bad Spaces\ngithub: bad user\n---',
+      'bad-chars.md': '---\nname: Bad Chars\ngithub: user@name\n---',
+    });
+
+    const result = await loadTeamMembers(teamDir);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].github).toBe('valid-user');
+    expect(result.warnings).toContainEqual(expect.stringContaining("Invalid GitHub handle 'bad user'"));
+    expect(result.warnings).toContainEqual(expect.stringContaining("Invalid GitHub handle 'user@name'"));
+  });
+
   it('deduplicates by GitHub handle (first file wins)', async () => {
     const teamDir = await createTeamDir({
       'alice1.md': '---\nname: Alice Original\ngithub: alice\n---',

@@ -122,6 +122,10 @@ export async function loadTeamMembers(teamDir: string): Promise<LoadResult<TeamM
       warnings.push(`Missing 'github' field in ${file}`);
       continue;
     }
+    if (!isValidGitHubHandle(github)) {
+      warnings.push(`Invalid GitHub handle '${github}' in ${file} (skipped)`);
+      continue;
+    }
 
     const handleLower = github.toLowerCase();
     if (seenHandles.has(handleLower)) {

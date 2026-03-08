@@ -54,34 +54,46 @@ function sevenDaysAgo(): string {
 }
 
 /**
+ * Sanitize a GitHub handle for use as a GraphQL alias.
+ * Replaces hyphens with underscores and prefixes with `u_` to avoid
+ * aliases starting with a digit (invalid in GraphQL).
+ */
+function toAlias(handle: string): string {
+  return `u_${handle.replace(/-/g, '_')}`;
+}
+
+/**
  * Build a batched GraphQL query that fetches assigned issues, authored PRs,
  * and recent activity for all team members in one request.
+ *
+ * Owner/name are interpolated directly into search strings because
+ * GraphQL variables are not substituted inside string literals.
  */
-export function buildTeamGraphQLQuery(members: TeamMember[]): string {
+export function buildTeamGraphQLQuery(members: TeamMember[], owner: string, name: string): string {
   const since = sevenDaysAgo();
+  const repo = `${owner}/${name}`;
 
   const fragments = members
     .filter(m => isValidGitHubHandle(m.github))
     .map((m) => {
-      // Sanitize handle for use as GraphQL alias (replace hyphens with underscores)
-      const alias = m.github.replace(/-/g, '_');
+      const alias = toAlias(m.github);
       return `
-    ${alias}_assigned: search(query: "repo:$owner/$name assignee:${m.github} is:issue is:open", type: ISSUE, first: 20) {
+    ${alias}_assigned: search(query: "repo:${repo} assignee:${m.github} is:issue is:open", type: ISSUE, first: 20) {
       nodes { ... on Issue { number title url } }
     }
-    ${alias}_prs: search(query: "repo:$owner/$name author:${m.github} is:pr is:open", type: ISSUE, first: 20) {
+    ${alias}_prs: search(query: "repo:${repo} author:${m.github} is:pr is:open", type: ISSUE, first: 20) {
       nodes { ... on PullRequest { number title url } }
     }
-    ${alias}_merged: search(query: "repo:$owner/$name author:${m.github} is:pr is:merged merged:>=${since}", type: ISSUE, first: 20) {
+    ${alias}_merged: search(query: "repo:${repo} author:${m.github} is:pr is:merged merged:>=${since}", type: ISSUE, first: 20) {
       nodes { ... on PullRequest { number title mergedAt } }
     }
-    ${alias}_closed: search(query: "repo:$owner/$name assignee:${m.github} is:issue is:closed closed:>=${since}", type: ISSUE, first: 20) {
+    ${alias}_closed: search(query: "repo:${repo} assignee:${m.github} is:issue is:closed closed:>=${since}", type: ISSUE, first: 20) {
       nodes { ... on Issue { number title closedAt } }
     }`;
     })
     .join('\n');
 
-  return `query($owner: String!, $name: String!) {
+  return `{
   ${fragments}
 }`;
 }
@@ -98,7 +110,7 @@ export function parseTeamGraphQLResponse(
   for (const member of members) {
     if (!isValidGitHubHandle(member.github)) continue;
 
-    const alias = member.github.replace(/-/g, '_');
+    const alias = toAlias(member.github);
     const assigned = data[`${alias}_assigned`] as { nodes?: Array<{ number: number; title: string; url: string }> } | undefined;
     const prs = data[`${alias}_prs`] as { nodes?: Array<{ number: number; title: string; url: string }> } | undefined;
     const merged = data[`${alias}_merged`] as { nodes?: Array<{ number: number; title: string; mergedAt: string }> } | undefined;
@@ -139,14 +151,12 @@ export async function fetchTeamGitHubData(
     return { data: new Map(), error: 'Could not determine repository (is gh CLI authenticated?)' };
   }
 
-  const query = buildTeamGraphQLQuery(validMembers);
+  const query = buildTeamGraphQLQuery(validMembers, repo.owner, repo.name);
 
   try {
     const { stdout } = await execFileAsync('gh', [
       'api', 'graphql',
       '-f', `query=${query}`,
-      '-f', `owner=${repo.owner}`,
-      '-f', `name=${repo.name}`,
     ], { cwd });
 
     const response = JSON.parse(stdout);

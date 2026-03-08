@@ -1469,15 +1469,15 @@ async function handleWorkspaceTeam(
   workspacePath: string,
 ): Promise<void> {
   const teamDir = path.join(workspacePath, 'codev', 'team');
-  const enabled = await hasTeam(teamDir);
 
-  if (!enabled) {
+  // Single read — avoids double filesystem traversal from hasTeam() + loadTeamMembers()
+  const membersResult = await loadTeamMembers(teamDir);
+  if (membersResult.items.length < 2) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ enabled: false }));
     return;
   }
 
-  const membersResult = await loadTeamMembers(teamDir);
   const messagesResult = await loadMessages(path.join(teamDir, 'messages.md'));
 
   const { data: githubData, error: githubError } = await fetchTeamGitHubData(
@@ -1485,17 +1485,13 @@ async function handleWorkspaceTeam(
     workspacePath,
   );
 
-  const members = membersResult.items.map((m: TeamMember) => {
-    const gh = githubData.get(m.github);
-    return {
-      name: m.name,
-      github: m.github,
-      role: m.role,
-      assignedIssues: gh?.assignedIssues ?? [],
-      openPRs: gh?.openPRs ?? [],
-      recentActivity: gh?.recentActivity ?? { mergedPRs: [], closedIssues: [] },
-    };
-  });
+  const members = membersResult.items.map((m: TeamMember) => ({
+    name: m.name,
+    github: m.github,
+    role: m.role,
+    filePath: m.filePath,
+    github_data: githubData.get(m.github) ?? null,
+  }));
 
   const messages = messagesResult.items.map((msg: TeamMessage) => ({
     author: msg.author,

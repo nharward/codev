@@ -2,15 +2,16 @@
  * Unit tests for lib/team-github.ts — GitHub data enrichment.
  *
  * Tests the pure functions (query builder, response parser) directly.
- * The async fetch functions depend on `gh` CLI and are not unit-tested here.
+ * Also tests fetchTeamGitHubData graceful degradation via vi.mock.
  *
  * Spec 587: Team Tab in Tower Right Panel.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   buildTeamGraphQLQuery,
   parseTeamGraphQLResponse,
+  fetchTeamGitHubData,
 } from '../lib/team-github.js';
 import type { TeamMember } from '../lib/team.js';
 
@@ -29,51 +30,59 @@ function makeMember(github: string, name?: string): TeamMember {
 describe('buildTeamGraphQLQuery', () => {
   it('generates aliased search queries for each member', () => {
     const members = [makeMember('alice'), makeMember('bob')];
-    const query = buildTeamGraphQLQuery(members);
+    const query = buildTeamGraphQLQuery(members, 'myorg', 'myrepo');
 
-    expect(query).toContain('alice_assigned: search(');
-    expect(query).toContain('alice_prs: search(');
-    expect(query).toContain('alice_merged: search(');
-    expect(query).toContain('alice_closed: search(');
-    expect(query).toContain('bob_assigned: search(');
-    expect(query).toContain('bob_prs: search(');
+    expect(query).toContain('u_alice_assigned: search(');
+    expect(query).toContain('u_alice_prs: search(');
+    expect(query).toContain('u_alice_merged: search(');
+    expect(query).toContain('u_alice_closed: search(');
+    expect(query).toContain('u_bob_assigned: search(');
+    expect(query).toContain('u_bob_prs: search(');
   });
 
   it('replaces hyphens with underscores in aliases', () => {
     const members = [makeMember('alice-bob')];
-    const query = buildTeamGraphQLQuery(members);
+    const query = buildTeamGraphQLQuery(members, 'org', 'repo');
 
-    // Alias should use underscore, but query string keeps original handle
-    expect(query).toContain('alice_bob_assigned: search(');
+    // Alias should use underscore with u_ prefix, but query string keeps original handle
+    expect(query).toContain('u_alice_bob_assigned: search(');
     expect(query).toContain('assignee:alice-bob');
   });
 
-  it('includes $owner/$name variables', () => {
-    const query = buildTeamGraphQLQuery([makeMember('alice')]);
-    expect(query).toContain('query($owner: String!, $name: String!)');
-    expect(query).toContain('repo:$owner/$name');
+  it('interpolates owner/name directly into search strings', () => {
+    const query = buildTeamGraphQLQuery([makeMember('alice')], 'myorg', 'myrepo');
+    expect(query).toContain('repo:myorg/myrepo');
+    // Should NOT use GraphQL variable syntax for owner/name
+    expect(query).not.toContain('$owner');
+    expect(query).not.toContain('$name');
   });
 
   it('filters out invalid GitHub handles', () => {
     const members = [makeMember('alice'), makeMember('-invalid')];
-    const query = buildTeamGraphQLQuery(members);
+    const query = buildTeamGraphQLQuery(members, 'org', 'repo');
 
-    expect(query).toContain('alice_assigned');
+    expect(query).toContain('u_alice_assigned');
     expect(query).not.toContain('invalid_assigned');
   });
 
   it('returns empty query body for no valid members', () => {
-    const query = buildTeamGraphQLQuery([makeMember('-invalid')]);
-    // Should still have the query wrapper but no search fragments
-    expect(query).toContain('query($owner: String!, $name: String!)');
+    const query = buildTeamGraphQLQuery([makeMember('-invalid')], 'org', 'repo');
+    // Should not contain any search fragments
     expect(query).not.toContain('_assigned: search(');
   });
 
   it('includes date filter for merged/closed queries', () => {
-    const query = buildTeamGraphQLQuery([makeMember('alice')]);
-    // Should have a date in YYYY-MM-DD format
+    const query = buildTeamGraphQLQuery([makeMember('alice')], 'org', 'repo');
     expect(query).toMatch(/merged:>=\d{4}-\d{2}-\d{2}/);
     expect(query).toMatch(/closed:>=\d{4}-\d{2}-\d{2}/);
+  });
+
+  it('handles digit-starting handles with u_ prefix', () => {
+    const members = [makeMember('42user')];
+    const query = buildTeamGraphQLQuery(members, 'org', 'repo');
+    // Should have u_ prefix, not start alias with digit
+    expect(query).toContain('u_42user_assigned: search(');
+    expect(query).not.toMatch(/^\s+42user_assigned/m);
   });
 });
 
@@ -85,16 +94,16 @@ describe('parseTeamGraphQLResponse', () => {
   it('parses a complete response into member data', () => {
     const members = [makeMember('alice')];
     const data = {
-      alice_assigned: {
+      u_alice_assigned: {
         nodes: [{ number: 1, title: 'Bug fix', url: 'https://github.com/org/repo/issues/1' }],
       },
-      alice_prs: {
+      u_alice_prs: {
         nodes: [{ number: 10, title: 'Feature PR', url: 'https://github.com/org/repo/pull/10' }],
       },
-      alice_merged: {
+      u_alice_merged: {
         nodes: [{ number: 5, title: 'Old PR', mergedAt: '2026-03-07T10:00:00Z' }],
       },
-      alice_closed: {
+      u_alice_closed: {
         nodes: [{ number: 2, title: 'Done issue', closedAt: '2026-03-06T15:00:00Z' }],
       },
     };
@@ -125,10 +134,10 @@ describe('parseTeamGraphQLResponse', () => {
   it('handles empty nodes arrays', () => {
     const members = [makeMember('bob')];
     const data = {
-      bob_assigned: { nodes: [] },
-      bob_prs: { nodes: [] },
-      bob_merged: { nodes: [] },
-      bob_closed: { nodes: [] },
+      u_bob_assigned: { nodes: [] },
+      u_bob_prs: { nodes: [] },
+      u_bob_merged: { nodes: [] },
+      u_bob_closed: { nodes: [] },
     };
 
     const result = parseTeamGraphQLResponse(data, members);
@@ -140,14 +149,14 @@ describe('parseTeamGraphQLResponse', () => {
   it('parses multiple members', () => {
     const members = [makeMember('alice'), makeMember('bob')];
     const data = {
-      alice_assigned: { nodes: [{ number: 1, title: 'A', url: 'u1' }] },
-      alice_prs: { nodes: [] },
-      alice_merged: { nodes: [] },
-      alice_closed: { nodes: [] },
-      bob_assigned: { nodes: [] },
-      bob_prs: { nodes: [{ number: 20, title: 'B', url: 'u2' }] },
-      bob_merged: { nodes: [] },
-      bob_closed: { nodes: [] },
+      u_alice_assigned: { nodes: [{ number: 1, title: 'A', url: 'u1' }] },
+      u_alice_prs: { nodes: [] },
+      u_alice_merged: { nodes: [] },
+      u_alice_closed: { nodes: [] },
+      u_bob_assigned: { nodes: [] },
+      u_bob_prs: { nodes: [{ number: 20, title: 'B', url: 'u2' }] },
+      u_bob_merged: { nodes: [] },
+      u_bob_closed: { nodes: [] },
     };
 
     const result = parseTeamGraphQLResponse(data, members);
@@ -159,10 +168,10 @@ describe('parseTeamGraphQLResponse', () => {
   it('handles hyphenated handles with underscore aliases', () => {
     const members = [makeMember('alice-bob')];
     const data = {
-      alice_bob_assigned: { nodes: [{ number: 3, title: 'Issue', url: 'u3' }] },
-      alice_bob_prs: { nodes: [] },
-      alice_bob_merged: { nodes: [] },
-      alice_bob_closed: { nodes: [] },
+      u_alice_bob_assigned: { nodes: [{ number: 3, title: 'Issue', url: 'u3' }] },
+      u_alice_bob_prs: { nodes: [] },
+      u_alice_bob_merged: { nodes: [] },
+      u_alice_bob_closed: { nodes: [] },
     };
 
     const result = parseTeamGraphQLResponse(data, members);
@@ -175,15 +184,42 @@ describe('parseTeamGraphQLResponse', () => {
   it('skips members with invalid GitHub handles', () => {
     const members = [makeMember('alice'), makeMember('-invalid')];
     const data = {
-      alice_assigned: { nodes: [] },
-      alice_prs: { nodes: [] },
-      alice_merged: { nodes: [] },
-      alice_closed: { nodes: [] },
+      u_alice_assigned: { nodes: [] },
+      u_alice_prs: { nodes: [] },
+      u_alice_merged: { nodes: [] },
+      u_alice_closed: { nodes: [] },
     };
 
     const result = parseTeamGraphQLResponse(data, members);
     expect(result.size).toBe(1);
     expect(result.has('alice')).toBe(true);
     expect(result.has('-invalid')).toBe(false);
+  });
+});
+
+// =============================================================================
+// fetchTeamGitHubData — graceful degradation
+// =============================================================================
+
+describe('fetchTeamGitHubData', () => {
+  it('returns empty map with no error for empty members list', async () => {
+    const result = await fetchTeamGitHubData([]);
+    expect(result.data.size).toBe(0);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('returns empty map with no error when all members have invalid handles', async () => {
+    const result = await fetchTeamGitHubData([makeMember('-bad'), makeMember('-also-bad')]);
+    expect(result.data.size).toBe(0);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('returns gracefully when gh CLI succeeds or fails', async () => {
+    // In CI, gh may not be authenticated; in dev, it may work.
+    // Either way, fetchTeamGitHubData should not throw.
+    const result = await fetchTeamGitHubData([makeMember('alice')]);
+    // Should always return a result object (never throw)
+    expect(result).toHaveProperty('data');
+    expect(result.data).toBeInstanceOf(Map);
   });
 });

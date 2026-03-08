@@ -17,7 +17,7 @@ import { teamMessage } from './team.js';
 // Event Collection
 // =============================================================================
 
-interface TeamEvent {
+export interface TeamEvent {
   type: 'spawn' | 'gate' | 'merge' | 'review';
   description: string;
 }
@@ -34,14 +34,15 @@ export async function collectEvents(workspacePath: string): Promise<TeamEvent[]>
   try {
     const since = oneHourAgo.toISOString();
     const log = execSync(
-      `git log --oneline --since="${since}" --all --grep="spawn" --grep="\\[Phase:" -i`,
+      `git log --oneline --since="${since}" --all --grep="spawn" -i`,
       { cwd: workspacePath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
     ).trim();
     for (const line of log.split('\n').filter(Boolean)) {
-      // Extract issue number if present
-      const match = line.match(/(?:spawn|#(\d+))/i);
-      if (match?.[1]) {
-        events.push({ type: 'spawn', description: `Spawned builder for #${match[1]}` });
+      // Two-step: confirm spawn-related, then extract issue number
+      if (!/spawn/i.test(line)) continue;
+      const issueMatch = line.match(/#(\d+)/);
+      if (issueMatch) {
+        events.push({ type: 'spawn', description: `Spawned builder for #${issueMatch[1]}` });
       }
     }
   } catch {
@@ -58,7 +59,8 @@ export async function collectEvents(workspacePath: string): Promise<TeamEvent[]>
         const stat = fs.statSync(statusPath);
         if (stat.mtime > oneHourAgo) {
           const content = fs.readFileSync(statusPath, 'utf-8');
-          if (content.includes('approved')) {
+          // Strict check: look for "approved: true" (not just "approved" substring)
+          if (/^approved:\s*true/m.test(content)) {
             const id = entry.split('-')[0];
             events.push({ type: 'gate', description: `Gate approved for #${id}` });
           }
@@ -70,15 +72,20 @@ export async function collectEvents(workspacePath: string): Promise<TeamEvent[]>
   }
 
   // 3. PR merges via gh CLI
+  // Note: GitHub search only supports date-level granularity for merged:>=,
+  // so we fetch by date and filter by mergedAt timestamp in code.
   try {
     const sinceDate = oneHourAgo.toISOString().split('T')[0];
     const output = execSync(
-      `gh pr list --state merged --search "merged:>=${sinceDate}" --json number,title --limit 10`,
+      `gh pr list --search "is:merged merged:>=${sinceDate}" --json number,title,mergedAt --limit 20`,
       { cwd: workspacePath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
     ).trim();
-    const prs = JSON.parse(output || '[]') as Array<{ number: number; title: string }>;
+    const prs = JSON.parse(output || '[]') as Array<{ number: number; title: string; mergedAt: string }>;
     for (const pr of prs) {
-      events.push({ type: 'merge', description: `Merged PR #${pr.number}: ${pr.title}` });
+      // Filter to actual last-hour window
+      if (new Date(pr.mergedAt) >= oneHourAgo) {
+        events.push({ type: 'merge', description: `Merged PR #${pr.number}: ${pr.title}` });
+      }
     }
   } catch {
     // gh CLI may not be available — skip silently

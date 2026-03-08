@@ -107,4 +107,25 @@ describe('collectEvents', () => {
     const events = await collectEvents(tmpDir);
     expect(events).toEqual([]);
   });
+
+  it('does not detect status.yaml without "approved: true"', async () => {
+    const projectDir = path.join(tmpDir, 'codev', 'projects', '42-feature');
+    await fs.mkdir(projectDir, { recursive: true });
+    // "approved" appears but not as "approved: true"
+    await fs.writeFile(path.join(projectDir, 'status.yaml'), 'phase: specify\napproved: false\n');
+
+    const events = await collectEvents(tmpDir);
+    const gateEvents = events.filter(e => e.type === 'gate');
+    expect(gateEvents).toHaveLength(0);
+  });
+
+  it('does not detect status.yaml with "unapproved" substring', async () => {
+    const projectDir = path.join(tmpDir, 'codev', 'projects', '42-feature');
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(path.join(projectDir, 'status.yaml'), 'phase: specify\nnote: unapproved\n');
+
+    const events = await collectEvents(tmpDir);
+    const gateEvents = events.filter(e => e.type === 'gate');
+    expect(gateEvents).toHaveLength(0);
+  });
 });

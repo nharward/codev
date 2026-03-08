@@ -339,6 +339,22 @@ describe('hasTeam', () => {
     await fs.writeFile(path.join(teamDir, 'people', 'readme.txt'), 'ignore');
     expect(await hasTeam(teamDir)).toBe(false);
   });
+
+  it('returns false when 2+ .md files exist but are invalid', async () => {
+    const teamDir = await createTeamDir({
+      'bad1.md': '---\nname: No GitHub\n---',
+      'bad2.md': 'no frontmatter at all',
+    });
+    expect(await hasTeam(teamDir)).toBe(false);
+  });
+
+  it('returns false with mix of valid and invalid totaling <2 valid', async () => {
+    const teamDir = await createTeamDir({
+      'alice.md': '---\nname: Alice\ngithub: alice\n---',
+      'bad.md': '---\nname: Missing GitHub\n---',
+    });
+    expect(await hasTeam(teamDir)).toBe(false);
+  });
 });
 
 // =============================================================================

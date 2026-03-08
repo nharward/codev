@@ -203,18 +203,12 @@ export async function loadMessages(messagesPath: string): Promise<LoadResult<Tea
 // =============================================================================
 
 /**
- * Check if a valid team exists (codev/team/ with 2+ member files in people/).
- * Lightweight check — only reads directory entries, not file contents.
+ * Check if a valid team exists (codev/team/ with 2+ valid member files in people/).
+ * Reads and validates frontmatter to ensure members have required fields.
  */
 export async function hasTeam(teamDir: string): Promise<boolean> {
-  const peopleDir = path.join(teamDir, 'people');
-  try {
-    const entries = await fs.readdir(peopleDir);
-    const mdFiles = entries.filter(f => f.endsWith('.md'));
-    return mdFiles.length >= 2;
-  } catch {
-    return false;
-  }
+  const result = await loadTeamMembers(teamDir);
+  return result.items.length >= 2;
 }
 
 // =============================================================================

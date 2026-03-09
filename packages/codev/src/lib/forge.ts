@@ -57,7 +57,7 @@ const DEFAULT_COMMANDS: Record<string, string> = {
   'pr-merge': 'gh pr merge "$CODEV_PR_NUMBER" --merge',
   // Additional concepts (found during plan review)
   'pr-search': 'gh pr list --search "$CODEV_SEARCH_QUERY" --json number,headRefName',
-  'pr-view': 'gh pr view "$CODEV_PR_NUMBER" --json title,body,state,author,baseRefName,headRefName,additions,deletions',
+  'pr-view': 'if [ "$CODEV_INCLUDE_COMMENTS" = "1" ]; then gh pr view "$CODEV_PR_NUMBER" --comments; else gh pr view "$CODEV_PR_NUMBER" --json title,body,state,author,baseRefName,headRefName,additions,deletions; fi',
   'pr-diff': 'gh pr diff "$CODEV_PR_NUMBER"',
   'gh-auth-status': 'gh auth status',
 };

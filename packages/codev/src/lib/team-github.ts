@@ -11,6 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isValidGitHubHandle } from './team.js';
 import type { TeamMember } from './team.js';
+import { executeForgeCommand, type ForgeConfig } from './forge.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -134,12 +135,14 @@ export function parseTeamGraphQLResponse(
 // =============================================================================
 
 /**
- * Fetch GitHub data for all team members in a single batched GraphQL request.
- * Returns null on failure (graceful degradation).
+ * Fetch forge data for all team members.
+ * Routes through the `team-activity` concept command with a batched GraphQL query.
+ * Returns empty data with error message on failure (graceful degradation).
  */
 export async function fetchTeamGitHubData(
   members: TeamMember[],
   cwd?: string,
+  forgeConfig?: ForgeConfig | null,
 ): Promise<{ data: Map<string, TeamMemberGitHubData>; error?: string }> {
   const validMembers = members.filter(m => isValidGitHubHandle(m.github));
   if (validMembers.length === 0) {
@@ -148,25 +151,28 @@ export async function fetchTeamGitHubData(
 
   const repo = await getRepoInfo(cwd);
   if (!repo) {
-    return { data: new Map(), error: 'Could not determine repository (is gh CLI authenticated?)' };
+    return { data: new Map(), error: 'Could not determine repository. Configure forge concepts in af-config.json.' };
   }
 
   const query = buildTeamGraphQLQuery(validMembers, repo.owner, repo.name);
 
   try {
-    const { stdout } = await execFileAsync('gh', [
-      'api', 'graphql',
-      '-f', `query=${query}`,
-    ], { cwd });
+    const result = await executeForgeCommand('team-activity', {
+      CODEV_GRAPHQL_QUERY: query,
+    }, { cwd, forgeConfig });
 
-    const response = JSON.parse(stdout);
+    if (!result || typeof result !== 'object') {
+      return { data: new Map(), error: 'team-activity concept returned no data' };
+    }
+
+    const response = result as { data?: Record<string, unknown> };
     if (!response.data) {
-      return { data: new Map(), error: 'GitHub GraphQL returned no data' };
+      return { data: new Map(), error: 'team-activity concept returned no data' };
     }
 
     return { data: parseTeamGraphQLResponse(response.data, validMembers) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { data: new Map(), error: `GitHub API request failed: ${message}` };
+    return { data: new Map(), error: `Forge API request failed: ${message}` };
   }
 }

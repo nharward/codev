@@ -5,10 +5,13 @@
  * with timeout support.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as path from 'node:path';
 import type { CheckResult, CheckDef } from './types.js';
-import { executeForgeCommand, getForgeCommand } from '../../lib/forge.js';
+import { executeForgeCommand, getForgeCommand, loadForgeConfig } from '../../lib/forge.js';
+
+const execFileAsync = promisify(execFile);
 
 /** Default timeout for checks: 5 minutes */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -171,18 +174,16 @@ async function runPrExistsViaConcept(
   cwd: string,
 ): Promise<CheckResult> {
   const startTime = Date.now();
-  const forgeCmd = getForgeCommand('pr-exists') ?? 'pr-exists (concept)';
+  const forgeConfig = loadForgeConfig(cwd);
+  const forgeCmd = getForgeCommand('pr-exists', forgeConfig) ?? 'pr-exists (concept)';
 
   try {
     // Get current branch name
-    const { execFile: execFileFn } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    const execFileAsync = promisify(execFileFn);
     const { stdout: branchName } = await execFileAsync('git', ['branch', '--show-current'], { cwd });
 
     const result = await executeForgeCommand('pr-exists', {
       CODEV_BRANCH_NAME: branchName.trim(),
-    }, { cwd });
+    }, { cwd, workspaceRoot: cwd });
 
     // The concept returns a truthy value (string "true", boolean true, or number > 0)
     const passed = result === true || result === 'true' || (typeof result === 'number' && result > 0);

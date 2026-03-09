@@ -8,6 +8,7 @@
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import type { CheckResult, CheckDef } from './types.js';
+import { executeForgeCommand, getForgeCommand } from '../../lib/forge.js';
 
 /** Default timeout for checks: 5 minutes */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -120,8 +121,12 @@ export async function runCheck(
 }
 
 /**
- * Run multiple checks for a phase
- * Accepts either Record<string, string> (legacy) or Record<string, CheckDef>
+ * Run multiple checks for a phase.
+ * Accepts either Record<string, string> (legacy) or Record<string, CheckDef>.
+ *
+ * Special handling: `pr_exists` checks are routed through the forge concept
+ * command dispatcher instead of running the protocol.json command directly.
+ * This allows per-project forge configuration while keeping protocol JSON unchanged.
  */
 export async function runPhaseChecks(
   checks: Record<string, string | CheckDef>,
@@ -136,6 +141,15 @@ export async function runPhaseChecks(
     const checkCwd = typeof checkVal === 'object' && checkVal.cwd
       ? path.resolve(cwd, checkVal.cwd)
       : cwd;
+
+    // Intercept pr_exists: route through forge concept command
+    if (name === 'pr_exists') {
+      const result = await runPrExistsViaConcept(name, checkCwd);
+      results.push(result);
+      if (!result.passed) break;
+      continue;
+    }
+
     const result = await runCheck(name, command, checkCwd, env, timeoutMs);
     results.push(result);
 
@@ -146,6 +160,49 @@ export async function runPhaseChecks(
   }
 
   return results;
+}
+
+/**
+ * Run pr_exists check via the forge concept command dispatcher.
+ * Gets the current branch name from git, then uses the pr-exists concept.
+ */
+async function runPrExistsViaConcept(
+  name: string,
+  cwd: string,
+): Promise<CheckResult> {
+  const startTime = Date.now();
+  const forgeCmd = getForgeCommand('pr-exists') ?? 'pr-exists (concept)';
+
+  try {
+    // Get current branch name
+    const { execFile: execFileFn } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execFileAsync = promisify(execFileFn);
+    const { stdout: branchName } = await execFileAsync('git', ['branch', '--show-current'], { cwd });
+
+    const result = await executeForgeCommand('pr-exists', {
+      CODEV_BRANCH_NAME: branchName.trim(),
+    }, { cwd });
+
+    // The concept returns a truthy value (string "true", boolean true, or number > 0)
+    const passed = result === true || result === 'true' || (typeof result === 'number' && result > 0);
+
+    return {
+      name,
+      command: forgeCmd,
+      passed,
+      output: String(result),
+      duration_ms: Date.now() - startTime,
+    };
+  } catch (err: unknown) {
+    return {
+      name,
+      command: forgeCmd,
+      passed: false,
+      error: err instanceof Error ? err.message : String(err),
+      duration_ms: Date.now() - startTime,
+    };
+  }
 }
 
 // ============================================================================

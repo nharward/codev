@@ -53,7 +53,7 @@ const DEFAULT_COMMANDS: Record<string, string> = {
   'recently-merged': 'gh pr list --state merged --search "merged:>$CODEV_SINCE_DATE" --json number,title,url,body,createdAt,mergedAt,headRefName --limit 50',
   'user-identity': 'gh api user --jq .login',
   'team-activity': 'gh api graphql -f query="$CODEV_GRAPHQL_QUERY"',
-  'on-it-timestamps': 'gh api graphql -f query="$CODEV_GRAPHQL_QUERY"',
+  'on-it-timestamps': 'gh api graphql -f query="$CODEV_GRAPHQL_QUERY" -f owner="$CODEV_REPO_OWNER" -f name="$CODEV_REPO_NAME"',
   'pr-merge': 'gh pr merge "$CODEV_PR_NUMBER" --merge',
   // Additional concepts (found during plan review)
   'pr-search': 'gh pr list --search "$CODEV_SEARCH_QUERY" --json number,headRefName',

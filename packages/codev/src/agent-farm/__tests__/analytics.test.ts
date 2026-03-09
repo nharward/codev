@@ -61,7 +61,7 @@ import { computeAnalytics, clearAnalyticsCache, protocolFromBranch } from '../se
 // ---------------------------------------------------------------------------
 
 function mockGhOutput(responses: Record<string, string>, onItTimestamps?: Record<number, string>) {
-  // Mock forge concept commands for fetchMergedPRs and fetchClosedIssues
+  // Mock forge concept commands for fetchMergedPRs, fetchClosedIssues, and fetchOnItTimestamps
   executeForgeCommandMock.mockImplementation((concept: string) => {
     if (concept === 'recently-merged') {
       return Promise.resolve(JSON.parse(responses.mergedPRs ?? '[]'));
@@ -69,19 +69,8 @@ function mockGhOutput(responses: Record<string, string>, onItTimestamps?: Record
     if (concept === 'recently-closed') {
       return Promise.resolve(JSON.parse(responses.closedIssues ?? '[]'));
     }
-    return Promise.resolve(null);
-  });
-
-  // Mock direct execFile for fetchOnItTimestamps (still uses gh directly)
-  execFileMock.mockImplementation((_cmd: string, args: string[]) => {
-    const argsStr = args.join(' ');
-
-    // gh repo view --json owner,name (for GraphQL repo context)
-    if (argsStr.includes('repo') && argsStr.includes('view')) {
-      return Promise.resolve({ stdout: JSON.stringify({ owner: { login: 'test' }, name: 'repo' }) });
-    }
-    // gh api graphql (for fetchOnItTimestamps batch query)
-    if (argsStr.includes('api') && argsStr.includes('graphql')) {
+    if (concept === 'on-it-timestamps') {
+      // Return GraphQL-style response matching the default gh command output
       const repository: Record<string, unknown> = {};
       if (onItTimestamps) {
         for (const [num, ts] of Object.entries(onItTimestamps)) {
@@ -90,9 +79,18 @@ function mockGhOutput(responses: Record<string, string>, onItTimestamps?: Record
           };
         }
       }
-      return Promise.resolve({
-        stdout: JSON.stringify({ data: { repository } }),
-      });
+      return Promise.resolve({ data: { repository } });
+    }
+    return Promise.resolve(null);
+  });
+
+  // Mock direct execFile for gh repo view (still used by fetchOnItTimestamps default path)
+  execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+    const argsStr = args.join(' ');
+
+    // gh repo view --json owner,name (for GraphQL repo context)
+    if (argsStr.includes('repo') && argsStr.includes('view')) {
+      return Promise.resolve({ stdout: JSON.stringify({ owner: { login: 'test' }, name: 'repo' }) });
     }
 
     return Promise.resolve({ stdout: '[]' });
@@ -705,41 +703,45 @@ describe('fetchOnItTimestamps', () => {
     vi.clearAllMocks();
   });
 
-  it('uses GraphQL batch query instead of individual gh issue view calls', async () => {
+  it('routes through on-it-timestamps concept command', async () => {
     execFileMock.mockImplementation((_cmd: string, args: string[]) => {
       const argsStr = args.join(' ');
       if (argsStr.includes('repo') && argsStr.includes('view')) {
         return Promise.resolve({ stdout: JSON.stringify({ owner: { login: 'test' }, name: 'repo' }) });
       }
-      if (argsStr.includes('api') && argsStr.includes('graphql')) {
-        return Promise.resolve({
-          stdout: JSON.stringify({
-            data: {
-              repository: {
-                issue42: { comments: { nodes: [{ body: 'On it! Working on it.', createdAt: '2026-02-10T06:00:00Z' }] } },
-                issue73: { comments: { nodes: [{ body: 'Just a comment', createdAt: '2026-02-10T07:00:00Z' }] } },
-              },
-            },
-          }),
-        });
-      }
       return Promise.resolve({ stdout: '[]' });
+    });
+
+    executeForgeCommandMock.mockResolvedValueOnce({
+      data: {
+        repository: {
+          issue42: { comments: { nodes: [{ body: 'On it! Working on it.', createdAt: '2026-02-10T06:00:00Z' }] } },
+          issue73: { comments: { nodes: [{ body: 'Just a comment', createdAt: '2026-02-10T07:00:00Z' }] } },
+        },
+      },
     });
 
     const result = await fetchOnItTimestamps([42, 73], '/tmp');
 
     expect(result.get(42)).toBe('2026-02-10T06:00:00Z');
     expect(result.has(73)).toBe(false); // No "On it!" comment
-    // Verify it used GraphQL, not individual gh issue view calls
-    const calls = execFileMock.mock.calls.map((c: unknown[]) => (c[1] as string[]).join(' '));
-    expect(calls.some((c: string) => c.includes('api') && c.includes('graphql'))).toBe(true);
-    expect(calls.some((c: string) => c.includes('issue') && c.includes('view'))).toBe(false);
+    // Verify it used the on-it-timestamps concept
+    expect(executeForgeCommandMock).toHaveBeenCalledWith(
+      'on-it-timestamps',
+      expect.objectContaining({
+        CODEV_ISSUE_NUMBERS: '42,73',
+        CODEV_GRAPHQL_QUERY: expect.any(String),
+        CODEV_REPO_OWNER: 'test',
+        CODEV_REPO_NAME: 'repo',
+      }),
+      expect.any(Object),
+    );
   });
 
   it('returns empty map for empty input', async () => {
     const result = await fetchOnItTimestamps([]);
     expect(result.size).toBe(0);
-    expect(execFileMock).not.toHaveBeenCalled();
+    expect(executeForgeCommandMock).not.toHaveBeenCalled();
   });
 
   it('deduplicates issue numbers', async () => {
@@ -748,19 +750,18 @@ describe('fetchOnItTimestamps', () => {
       if (argsStr.includes('repo') && argsStr.includes('view')) {
         return Promise.resolve({ stdout: JSON.stringify({ owner: { login: 'test' }, name: 'repo' }) });
       }
-      if (argsStr.includes('api') && argsStr.includes('graphql')) {
-        // Check that the query only has one alias for issue 42
-        const queryArg = args.find((a: string) => a.startsWith('query='));
-        const count = (queryArg?.match(/issue42:/g) ?? []).length;
-        expect(count).toBe(1);
-        return Promise.resolve({
-          stdout: JSON.stringify({ data: { repository: {} } }),
-        });
-      }
       return Promise.resolve({ stdout: '[]' });
     });
+    executeForgeCommandMock.mockResolvedValueOnce({ data: { repository: {} } });
 
     await fetchOnItTimestamps([42, 42, 42], '/tmp');
+
+    // Verify CODEV_ISSUE_NUMBERS has only one 42
+    expect(executeForgeCommandMock).toHaveBeenCalledWith(
+      'on-it-timestamps',
+      expect.objectContaining({ CODEV_ISSUE_NUMBERS: '42' }),
+      expect.any(Object),
+    );
   });
 
   it('returns empty map when repo lookup fails', async () => {
@@ -770,22 +771,41 @@ describe('fetchOnItTimestamps', () => {
     expect(result.size).toBe(0);
   });
 
-  it('handles GraphQL query failure gracefully', async () => {
-    let callCount = 0;
+  it('handles concept command failure gracefully', async () => {
     execFileMock.mockImplementation((_cmd: string, args: string[]) => {
       const argsStr = args.join(' ');
       if (argsStr.includes('repo') && argsStr.includes('view')) {
         return Promise.resolve({ stdout: JSON.stringify({ owner: { login: 'test' }, name: 'repo' }) });
       }
-      if (argsStr.includes('api') && argsStr.includes('graphql')) {
-        callCount++;
-        return Promise.reject(new Error('GraphQL rate limited'));
-      }
       return Promise.resolve({ stdout: '[]' });
     });
+    executeForgeCommandMock.mockRejectedValueOnce(new Error('concept failed'));
 
     const result = await fetchOnItTimestamps([42, 73], '/tmp');
     expect(result.size).toBe(0);
-    expect(callCount).toBe(1); // Only one batch call attempted
+  });
+
+  it('supports custom forge config with simple JSON map response', async () => {
+    const forgeConfig = { 'on-it-timestamps': 'custom-cmd' };
+    executeForgeCommandMock.mockResolvedValueOnce({
+      '42': '2026-02-10T06:00:00Z',
+      '73': '2026-02-10T07:00:00Z',
+    });
+
+    const result = await fetchOnItTimestamps([42, 73], '/tmp', forgeConfig);
+
+    expect(result.get(42)).toBe('2026-02-10T06:00:00Z');
+    expect(result.get(73)).toBe('2026-02-10T07:00:00Z');
+    // Should not call execFile for repo view (custom path)
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('returns empty map when custom concept is disabled (null)', async () => {
+    const forgeConfig = { 'on-it-timestamps': null };
+
+    const result = await fetchOnItTimestamps([42], '/tmp', forgeConfig as any);
+
+    expect(result.size).toBe(0);
+    expect(executeForgeCommandMock).not.toHaveBeenCalled();
   });
 });

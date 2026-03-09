@@ -242,28 +242,54 @@ export async function fetchClosedIssues(
 }
 
 /**
- * Fetch the "On it!" comment timestamp for multiple issues using GraphQL.
+ * Fetch the "On it!" comment timestamp for multiple issues.
  *
- * Uses a batched GraphQL query via `gh api graphql` to fetch comments for
- * many issues in a single API call. Finds the first comment containing
- * "On it!" (posted by `af spawn`). Returns a map of issue number → ISO timestamp.
- * Issues without an "On it!" comment are omitted from the result.
+ * Routes through the `on-it-timestamps` concept command. The default command
+ * uses `gh api graphql` with a batched query. Non-GitHub forges can provide
+ * a simpler command that accepts CODEV_ISSUE_NUMBERS (comma-separated) and
+ * returns a JSON map of issue number → ISO timestamp.
+ *
+ * For the default GitHub implementation, this function builds the GraphQL
+ * query internally and passes it via CODEV_GRAPHQL_QUERY. It also needs
+ * repo owner/name which it fetches via a separate gh call.
  *
  * Batches in groups of 50 to stay within GraphQL complexity limits.
- * For 100 issues, this makes 2 API calls instead of 100.
- *
- * NOTE: This function still uses direct `gh` calls. It will be migrated
- * to the `on-it-timestamps` concept command in Phase 4.
+ * Returns empty map on failure (graceful degradation — analytics falls
+ * back to PR createdAt for wall-clock time).
  */
 export async function fetchOnItTimestamps(
   issueNumbers: number[],
   cwd?: string,
+  forgeConfig?: ForgeConfig | null,
 ): Promise<Map<number, string>> {
   const result = new Map<number, string>();
   if (issueNumbers.length === 0) return result;
 
   const unique = [...new Set(issueNumbers)];
 
+  // Check if a custom (non-default) on-it-timestamps command is configured.
+  // Custom commands receive CODEV_ISSUE_NUMBERS and return a simple JSON map.
+  const customCmd = forgeConfig?.['on-it-timestamps'];
+  if (customCmd !== undefined) {
+    // Custom command or explicitly disabled (null)
+    if (customCmd === null) return result;
+
+    const cmdResult = await executeForgeCommand('on-it-timestamps', {
+      CODEV_ISSUE_NUMBERS: unique.join(','),
+    }, { cwd, forgeConfig });
+
+    if (cmdResult && typeof cmdResult === 'object' && !Array.isArray(cmdResult)) {
+      for (const [key, value] of Object.entries(cmdResult as Record<string, string>)) {
+        const num = parseInt(key, 10);
+        if (!isNaN(num) && typeof value === 'string') {
+          result.set(num, value);
+        }
+      }
+    }
+    return result;
+  }
+
+  // Default path: build GraphQL query for gh api graphql
   // Get repo owner/name for GraphQL query
   let owner: string;
   let repoName: string;
@@ -295,22 +321,23 @@ export async function fetchOnItTimestamps(
 }`;
 
     try {
-      const { stdout } = await execFileAsync('gh', [
-        'api', 'graphql',
-        '-f', `query=${query}`,
-        '-f', `owner=${owner}`,
-        '-f', `name=${repoName}`,
-      ], { cwd });
+      const cmdResult = await executeForgeCommand('on-it-timestamps', {
+        CODEV_ISSUE_NUMBERS: batch.join(','),
+        CODEV_GRAPHQL_QUERY: query,
+        CODEV_REPO_OWNER: owner,
+        CODEV_REPO_NAME: repoName,
+      }, { cwd, forgeConfig });
 
-      const data = JSON.parse(stdout);
-      const repoData = data.data?.repository;
+      // Default gh command returns GraphQL response structure
+      const data = cmdResult as { data?: { repository?: Record<string, { comments?: { nodes?: Array<{ body: string; createdAt: string }> } }> } } | null;
+      const repoData = data?.data?.repository;
       if (!repoData) continue;
 
       for (const num of batch) {
         const issueData = repoData[`issue${num}`];
         if (!issueData?.comments?.nodes) continue;
 
-        const onItComment = (issueData.comments.nodes as Array<{ body: string; createdAt: string }>)
+        const onItComment = issueData.comments.nodes
           .find((c) => c.body.includes('On it!'));
         if (onItComment) {
           result.set(num, onItComment.createdAt);

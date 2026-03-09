@@ -34,11 +34,17 @@ export interface TeamMemberGitHubData {
 
 export async function getRepoInfo(cwd?: string): Promise<{ owner: string; name: string } | null> {
   try {
-    const { stdout } = await execFileAsync('gh', [
-      'repo', 'view', '--json', 'owner,name',
+    // Derive owner/name from git remote URL instead of calling gh directly
+    const { stdout } = await execFileAsync('git', [
+      'remote', 'get-url', 'origin',
     ], { cwd });
-    const repo = JSON.parse(stdout);
-    return { owner: repo.owner.login, name: repo.name };
+    const url = stdout.trim();
+    // Match SSH (git@github.com:owner/repo.git) or HTTPS (https://github.com/owner/repo.git)
+    const match = url.match(/[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
+    if (match) {
+      return { owner: match[1], name: match[2] };
+    }
+    return null;
   } catch {
     return null;
   }

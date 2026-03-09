@@ -759,9 +759,14 @@ function fetchPRData(prNumber: number): { info: string; changedFiles: string[]; 
 
     let comments = '(No comments)';
     try {
-      // Comments are included in pr-view for forges that support it;
-      // fall back to gh pr view --comments for the default GitHub path
-      comments = execSync(`gh pr view ${prNumber} --comments`, { encoding: 'utf-8' });
+      // Fetch PR comments via pr-view concept with CODEV_INCLUDE_COMMENTS flag
+      const commentsResult = executeForgeCommandSync('pr-view', {
+        CODEV_PR_NUMBER: String(prNumber),
+        CODEV_INCLUDE_COMMENTS: '1',
+      }, { raw: true });
+      if (commentsResult && typeof commentsResult === 'string' && commentsResult.trim()) {
+        comments = commentsResult;
+      }
     } catch {
       // No comments or error fetching
     }

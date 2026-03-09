@@ -10,7 +10,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
-import { executeForgeCommandSync, loadForgeConfig } from '../lib/forge.js';
+import { executeForgeCommandSync, loadForgeConfig, validateForgeConfig } from '../lib/forge.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -631,6 +631,31 @@ export async function doctor(): Promise<number> {
       }
     }
     console.log('');
+
+    // Forge concept validation
+    const forgeConfig = loadForgeConfig(workspaceRoot);
+    if (forgeConfig && Object.keys(forgeConfig).length > 0) {
+      console.log(chalk.bold('Forge Concepts') + ' (custom command overrides)');
+      console.log('');
+      const validationResults = validateForgeConfig(forgeConfig);
+      let forgeOk = true;
+      for (const r of validationResults) {
+        if (r.status === 'ok') {
+          console.log(`  ${chalk.green('✓')} ${r.message}`);
+        } else if (r.status === 'disabled') {
+          console.log(`  ${chalk.dim('○')} ${r.message}`);
+        } else {
+          forgeOk = false;
+          console.log(`  ${chalk.yellow('⚠')} ${r.message}`);
+          warnings++;
+          warningDetails.push({ name: 'Forge concepts', issue: r.message });
+        }
+      }
+      if (forgeOk && validationResults.length > 0) {
+        console.log(`  ${chalk.green('✓')} All forge concepts valid`);
+      }
+      console.log('');
+    }
   }
 
   // Summary

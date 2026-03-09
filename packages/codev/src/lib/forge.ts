@@ -20,6 +20,25 @@ import { resolve } from 'node:path';
 const execAsync = promisify(exec);
 
 // =============================================================================
+// Types
+// =============================================================================
+
+/** Forge config from af-config.json `forge` section. */
+export type ForgeConfig = Record<string, string | null>;
+
+/** Options for forge command execution. */
+export interface ForgeCommandOptions {
+  /** Working directory for command execution. */
+  cwd?: string;
+  /** Workspace root for loading af-config.json (only used if forgeConfig not provided). */
+  workspaceRoot?: string;
+  /** Pre-loaded forge config. Avoids repeated af-config.json reads. */
+  forgeConfig?: ForgeConfig | null;
+  /** If true, return stdout as raw string instead of parsing as JSON. */
+  raw?: boolean;
+}
+
+// =============================================================================
 // Default concept commands (gh-based)
 // =============================================================================
 
@@ -30,8 +49,8 @@ const DEFAULT_COMMANDS: Record<string, string> = {
   'issue-list': 'gh issue list --limit 200 --json number,title,url,labels,createdAt',
   'issue-comment': 'gh issue comment "$CODEV_ISSUE_ID" --body "$CODEV_COMMENT_BODY"',
   'pr-exists': 'gh pr list --state all --head "$CODEV_BRANCH_NAME" --json number --jq "length > 0"',
-  'recently-closed': 'gh issue list --state closed --json number,title,url,labels,createdAt,closedAt --limit 50',
-  'recently-merged': 'gh pr list --state merged --json number,title,url,body,createdAt,mergedAt,headRefName --limit 50',
+  'recently-closed': 'gh issue list --state closed --search "closed:>$CODEV_SINCE_DATE" --json number,title,url,labels,createdAt,closedAt --limit 50',
+  'recently-merged': 'gh pr list --state merged --search "merged:>$CODEV_SINCE_DATE" --json number,title,url,body,createdAt,mergedAt,headRefName --limit 50',
   'user-identity': 'gh api user --jq .login',
   'team-activity': 'gh api graphql -f query="$CODEV_GRAPHQL_QUERY"',
   'on-it-timestamps': 'gh api graphql -f query="$CODEV_GRAPHQL_QUERY"',
@@ -50,8 +69,11 @@ const DEFAULT_COMMANDS: Record<string, string> = {
 /**
  * Load forge configuration from af-config.json.
  * Returns the forge section or null if not configured.
+ *
+ * Prefer passing forge config directly via ForgeCommandOptions.forgeConfig
+ * when config is already loaded (e.g., from loadUserConfig in config.ts).
  */
-export function loadForgeConfig(workspaceRoot: string): Record<string, string | null> | null {
+export function loadForgeConfig(workspaceRoot: string): ForgeConfig | null {
   const configPath = resolve(workspaceRoot, 'af-config.json');
   if (!existsSync(configPath)) return null;
 
@@ -64,6 +86,13 @@ export function loadForgeConfig(workspaceRoot: string): Record<string, string | 
   }
 }
 
+/** Resolve forge config from options: explicit > loaded from workspace > null. */
+function resolveForgeConfig(options?: ForgeCommandOptions): ForgeConfig | null {
+  if (options?.forgeConfig !== undefined) return options.forgeConfig;
+  if (options?.workspaceRoot) return loadForgeConfig(options.workspaceRoot);
+  return null;
+}
+
 /**
  * Get the command string for a concept.
  * Resolution order: user override > default gh command.
@@ -71,7 +100,7 @@ export function loadForgeConfig(workspaceRoot: string): Record<string, string | 
  */
 export function getForgeCommand(
   concept: string,
-  forgeConfig?: Record<string, string | null> | null,
+  forgeConfig?: ForgeConfig | null,
 ): string | null {
   // Check user overrides first
   if (forgeConfig && concept in forgeConfig) {
@@ -87,7 +116,7 @@ export function getForgeCommand(
  */
 export function isConceptDisabled(
   concept: string,
-  forgeConfig?: Record<string, string | null> | null,
+  forgeConfig?: ForgeConfig | null,
 ): boolean {
   if (!forgeConfig) return false;
   return concept in forgeConfig && forgeConfig[concept] === null;
@@ -111,50 +140,25 @@ export function isConceptDisabled(
 export async function executeForgeCommand(
   concept: string,
   env?: Record<string, string>,
-  options?: { cwd?: string; workspaceRoot?: string; raw?: boolean },
+  options?: ForgeCommandOptions,
 ): Promise<unknown | null> {
-  const forgeConfig = options?.workspaceRoot ? loadForgeConfig(options.workspaceRoot) : null;
+  const forgeConfig = resolveForgeConfig(options);
   const command = getForgeCommand(concept, forgeConfig);
 
   if (command === null) {
-    // Concept is disabled or unknown
     return null;
   }
-
-  const shellEnv = {
-    ...process.env,
-    ...env,
-  };
 
   try {
     const { stdout } = await execAsync(command, {
       cwd: options?.cwd,
-      env: shellEnv,
-      timeout: 30_000, // 30 second default timeout
+      env: { ...process.env, ...env },
+      timeout: 30_000,
     });
 
-    const trimmed = stdout.trim();
-    if (!trimmed) return null;
-
-    // Some concepts return non-JSON (pr-diff returns diff text, user-identity returns a string)
-    if (options?.raw) {
-      return trimmed;
-    }
-
-    // Try to parse as JSON
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      // Not valid JSON — return as raw string
-      // This handles concepts like user-identity that return plain text
-      return trimmed;
-    }
+    return parseOutput(stdout, options?.raw);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Log at debug level — concept unavailability is expected for non-GitHub repos
-    if (process.env.CODEV_DEBUG) {
-      console.warn(`[forge] concept '${concept}' failed: ${msg}`);
-    }
+    logDebug(concept, err);
     return null;
   }
 }
@@ -164,55 +168,61 @@ export async function executeForgeCommand(
  *
  * Same as executeForgeCommand but blocks until completion.
  * Use sparingly — prefer the async variant.
- *
- * @param concept - The concept name
- * @param env - Additional environment variables
- * @param options - Execution options
- * @returns Parsed JSON, raw string, or null on failure
  */
 export function executeForgeCommandSync(
   concept: string,
   env?: Record<string, string>,
-  options?: { cwd?: string; workspaceRoot?: string; raw?: boolean },
+  options?: ForgeCommandOptions,
 ): unknown | null {
-  const forgeConfig = options?.workspaceRoot ? loadForgeConfig(options.workspaceRoot) : null;
+  const forgeConfig = resolveForgeConfig(options);
   const command = getForgeCommand(concept, forgeConfig);
 
   if (command === null) {
     return null;
   }
 
-  const shellEnv = {
-    ...process.env,
-    ...env,
-  };
-
   try {
     const stdout = execSync(command, {
       cwd: options?.cwd,
-      env: shellEnv,
+      env: { ...process.env, ...env },
       encoding: 'utf-8',
       timeout: 30_000,
       stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
+    });
 
-    if (!stdout) return null;
-
-    if (options?.raw) {
-      return stdout;
-    }
-
-    try {
-      return JSON.parse(stdout);
-    } catch {
-      return stdout;
-    }
+    return parseOutput(stdout, options?.raw);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (process.env.CODEV_DEBUG) {
-      console.warn(`[forge] concept '${concept}' (sync) failed: ${msg}`);
-    }
+    logDebug(concept, err, true);
     return null;
+  }
+}
+
+// =============================================================================
+// Internal helpers
+// =============================================================================
+
+/** Parse command stdout: try JSON, fall back to raw string, null if empty. */
+function parseOutput(stdout: string, raw?: boolean): unknown | null {
+  const trimmed = stdout.trim();
+  if (!trimmed) return null;
+
+  if (raw) return trimmed;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Not valid JSON — return as raw string.
+    // Handles concepts like user-identity that return plain text.
+    return trimmed;
+  }
+}
+
+/** Log concept failure at debug level. */
+function logDebug(concept: string, err: unknown, sync = false): void {
+  if (process.env.CODEV_DEBUG) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const suffix = sync ? ' (sync)' : '';
+    console.warn(`[forge] concept '${concept}'${suffix} failed: ${msg}`);
   }
 }
 
@@ -236,40 +246,24 @@ export function getDefaultCommand(concept: string): string | null {
 }
 
 /**
- * Validate forge configuration from af-config.json.
+ * Validate forge configuration.
  * Returns an array of diagnostic messages.
  * Used by `codev doctor`.
  */
 export function validateForgeConfig(
-  forgeConfig: Record<string, string | null>,
+  forgeConfig: ForgeConfig,
 ): { concept: string; status: 'ok' | 'disabled' | 'unknown_concept' | 'empty_command'; message: string }[] {
   const results: { concept: string; status: 'ok' | 'disabled' | 'unknown_concept' | 'empty_command'; message: string }[] = [];
 
   for (const [concept, command] of Object.entries(forgeConfig)) {
     if (command === null) {
-      results.push({
-        concept,
-        status: 'disabled',
-        message: `Concept '${concept}' is explicitly disabled`,
-      });
+      results.push({ concept, status: 'disabled', message: `Concept '${concept}' is explicitly disabled` });
     } else if (command === '') {
-      results.push({
-        concept,
-        status: 'empty_command',
-        message: `Concept '${concept}' has an empty command string`,
-      });
+      results.push({ concept, status: 'empty_command', message: `Concept '${concept}' has an empty command string` });
     } else if (!(concept in DEFAULT_COMMANDS)) {
-      results.push({
-        concept,
-        status: 'unknown_concept',
-        message: `Concept '${concept}' is not a known forge concept`,
-      });
+      results.push({ concept, status: 'unknown_concept', message: `Concept '${concept}' is not a known forge concept` });
     } else {
-      results.push({
-        concept,
-        status: 'ok',
-        message: `Concept '${concept}' overridden: ${command}`,
-      });
+      results.push({ concept, status: 'ok', message: `Concept '${concept}' overridden: ${command}` });
     }
   }
 

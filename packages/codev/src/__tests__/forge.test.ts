@@ -1,10 +1,14 @@
 /**
  * Unit tests for lib/forge.ts — forge concept command dispatcher.
  *
- * Tests: command resolution, config loading, concept execution, validation.
+ * Tests: command resolution, config loading, concept execution with mock
+ * scripts, validation, and edge cases.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { writeFileSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   getForgeCommand,
   isConceptDisabled,
@@ -15,6 +19,72 @@ import {
   validateForgeConfig,
   loadForgeConfig,
 } from '../lib/forge.js';
+
+// =============================================================================
+// Test fixtures: mock scripts for deterministic execution tests
+// =============================================================================
+
+const TEST_DIR = join(tmpdir(), `forge-test-${process.pid}`);
+const MOCK_SCRIPTS_DIR = join(TEST_DIR, 'scripts');
+
+beforeAll(() => {
+  mkdirSync(MOCK_SCRIPTS_DIR, { recursive: true });
+
+  // Script that outputs valid JSON
+  writeFileSync(join(MOCK_SCRIPTS_DIR, 'json-output.sh'),
+    '#!/bin/sh\necho \'{"title":"Test Issue","state":"open"}\'\n');
+  chmodSync(join(MOCK_SCRIPTS_DIR, 'json-output.sh'), 0o755);
+
+  // Script that outputs a JSON array
+  writeFileSync(join(MOCK_SCRIPTS_DIR, 'json-array.sh'),
+    '#!/bin/sh\necho \'[{"number":1,"title":"PR One"},{"number":2,"title":"PR Two"}]\'\n');
+  chmodSync(join(MOCK_SCRIPTS_DIR, 'json-array.sh'), 0o755);
+
+  // Script that outputs plain text (not JSON)
+  writeFileSync(join(MOCK_SCRIPTS_DIR, 'text-output.sh'),
+    '#!/bin/sh\necho "nharward"\n');
+  chmodSync(join(MOCK_SCRIPTS_DIR, 'text-output.sh'), 0o755);
+
+  // Script that outputs nothing (empty stdout)
+  writeFileSync(join(MOCK_SCRIPTS_DIR, 'empty-output.sh'),
+    '#!/bin/sh\n');
+  chmodSync(join(MOCK_SCRIPTS_DIR, 'empty-output.sh'), 0o755);
+
+  // Script that exits with non-zero
+  writeFileSync(join(MOCK_SCRIPTS_DIR, 'fail.sh'),
+    '#!/bin/sh\nexit 1\n');
+  chmodSync(join(MOCK_SCRIPTS_DIR, 'fail.sh'), 0o755);
+
+  // Script that echoes a CODEV_* env var as JSON
+  writeFileSync(join(MOCK_SCRIPTS_DIR, 'echo-env.sh'),
+    '#!/bin/sh\necho "{\\"issue_id\\": \\"$CODEV_ISSUE_ID\\", \\"branch\\": \\"$CODEV_BRANCH_NAME\\"}"\n');
+  chmodSync(join(MOCK_SCRIPTS_DIR, 'echo-env.sh'), 0o755);
+
+  // Script that outputs invalid JSON
+  writeFileSync(join(MOCK_SCRIPTS_DIR, 'invalid-json.sh'),
+    '#!/bin/sh\necho "not valid json {"\n');
+  chmodSync(join(MOCK_SCRIPTS_DIR, 'invalid-json.sh'), 0o755);
+
+  // Script that outputs raw diff text
+  writeFileSync(join(MOCK_SCRIPTS_DIR, 'diff-output.sh'),
+    '#!/bin/sh\necho "diff --git a/file.ts b/file.ts"\necho "--- a/file.ts"\necho "+++ b/file.ts"\n');
+  chmodSync(join(MOCK_SCRIPTS_DIR, 'diff-output.sh'), 0o755);
+
+  // af-config.json with forge overrides
+  writeFileSync(join(TEST_DIR, 'af-config.json'), JSON.stringify({
+    forge: {
+      'issue-view': join(MOCK_SCRIPTS_DIR, 'json-output.sh'),
+      'pr-list': join(MOCK_SCRIPTS_DIR, 'json-array.sh'),
+      'user-identity': join(MOCK_SCRIPTS_DIR, 'text-output.sh'),
+      'team-activity': null,
+      'pr-diff': join(MOCK_SCRIPTS_DIR, 'diff-output.sh'),
+    },
+  }));
+});
+
+afterAll(() => {
+  rmSync(TEST_DIR, { recursive: true, force: true });
+});
 
 // =============================================================================
 // Command resolution
@@ -62,84 +132,163 @@ describe('isConceptDisabled', () => {
   });
 
   it('returns false when concept is not in config', () => {
-    const config = { 'pr-list': 'custom' };
-    expect(isConceptDisabled('issue-view', config)).toBe(false);
+    expect(isConceptDisabled('issue-view', { 'pr-list': 'custom' })).toBe(false);
   });
 
   it('returns true when concept is set to null', () => {
-    const config = { 'team-activity': null };
-    expect(isConceptDisabled('team-activity', config)).toBe(true);
+    expect(isConceptDisabled('team-activity', { 'team-activity': null })).toBe(true);
   });
 
   it('returns false when concept has a command string', () => {
-    const config = { 'pr-list': 'custom-command' };
-    expect(isConceptDisabled('pr-list', config)).toBe(false);
+    expect(isConceptDisabled('pr-list', { 'pr-list': 'custom' })).toBe(false);
   });
 });
 
 // =============================================================================
-// Concept execution (async)
+// Async execution with mock scripts
 // =============================================================================
 
 describe('executeForgeCommand', () => {
-  it('executes a simple echo command and parses JSON', async () => {
-    // Override with a test command that outputs JSON
+  it('parses valid JSON output from concept command', async () => {
     const result = await executeForgeCommand('issue-view', {}, {
-      workspaceRoot: '/nonexistent', // no config file → falls back to default
+      forgeConfig: { 'issue-view': join(MOCK_SCRIPTS_DIR, 'json-output.sh') },
     });
-    // Default command will fail (no gh or no repo), so result is null
-    // This is expected graceful degradation
+    expect(result).toEqual({ title: 'Test Issue', state: 'open' });
+  });
+
+  it('parses JSON array output', async () => {
+    const result = await executeForgeCommand('pr-list', {}, {
+      forgeConfig: { 'pr-list': join(MOCK_SCRIPTS_DIR, 'json-array.sh') },
+    });
+    expect(result).toEqual([
+      { number: 1, title: 'PR One' },
+      { number: 2, title: 'PR Two' },
+    ]);
+  });
+
+  it('returns raw string for non-JSON output', async () => {
+    const result = await executeForgeCommand('user-identity', {}, {
+      forgeConfig: { 'user-identity': join(MOCK_SCRIPTS_DIR, 'text-output.sh') },
+    });
+    expect(result).toBe('nharward');
+  });
+
+  it('returns null for empty stdout', async () => {
+    const result = await executeForgeCommand('issue-view', {}, {
+      forgeConfig: { 'issue-view': join(MOCK_SCRIPTS_DIR, 'empty-output.sh') },
+    });
+    expect(result).toBeNull();
+  });
+
+  it('returns null on non-zero exit code', async () => {
+    const result = await executeForgeCommand('issue-view', {}, {
+      forgeConfig: { 'issue-view': join(MOCK_SCRIPTS_DIR, 'fail.sh') },
+    });
     expect(result).toBeNull();
   });
 
   it('returns null for disabled concepts without executing', async () => {
-    // Create a temp af-config.json would be needed for real test
-    // For unit test, we test the null path directly via internal mechanism
+    const result = await executeForgeCommand('team-activity', {}, {
+      forgeConfig: { 'team-activity': null },
+    });
+    expect(result).toBeNull();
+  });
+
+  it('returns null for unknown concepts', async () => {
     const result = await executeForgeCommand('nonexistent-concept', {});
     expect(result).toBeNull();
   });
 
-  it('passes environment variables to the command', async () => {
-    // Use a command that echoes an env var as JSON
-    const origDefault = getDefaultCommand('issue-view');
-    expect(origDefault).toBeTruthy();
-
-    // We can't easily mock the default commands, but we can verify
-    // the function handles env vars by testing with a real command
+  it('passes CODEV_* environment variables to the command', async () => {
     const result = await executeForgeCommand('issue-view', {
-      CODEV_ISSUE_ID: '42',
-    });
-    // If gh is available and authenticated, returns issue data; otherwise null
-    if (result !== null) {
-      expect(result).toHaveProperty('title');
-      expect(result).toHaveProperty('state');
-    }
+      CODEV_ISSUE_ID: 'PROJ-42',
+      CODEV_BRANCH_NAME: 'feature/foo',
+    }, {
+      forgeConfig: { 'issue-view': join(MOCK_SCRIPTS_DIR, 'echo-env.sh') },
+    }) as { issue_id: string; branch: string };
+
+    expect(result).toBeTruthy();
+    expect(result.issue_id).toBe('PROJ-42');
+    expect(result.branch).toBe('feature/foo');
   });
 
-  it('handles non-JSON output gracefully', async () => {
-    // The user-identity concept returns plain text, not JSON
-    // If gh is available, it returns the username as a string; otherwise null
-    const result = await executeForgeCommand('user-identity', {});
-    if (result !== null) {
-      expect(typeof result).toBe('string');
-    }
+  it('returns raw string for invalid JSON when not in raw mode', async () => {
+    const result = await executeForgeCommand('issue-view', {}, {
+      forgeConfig: { 'issue-view': join(MOCK_SCRIPTS_DIR, 'invalid-json.sh') },
+    });
+    // Invalid JSON falls back to raw string
+    expect(typeof result).toBe('string');
+    expect(result).toContain('not valid json');
+  });
+
+  it('returns raw string when raw option is true', async () => {
+    const result = await executeForgeCommand('pr-diff', {}, {
+      forgeConfig: { 'pr-diff': join(MOCK_SCRIPTS_DIR, 'diff-output.sh') },
+      raw: true,
+    });
+    expect(typeof result).toBe('string');
+    expect(result).toContain('diff --git');
+  });
+
+  it('loads forge config from workspaceRoot af-config.json', async () => {
+    const result = await executeForgeCommand('issue-view', {}, {
+      workspaceRoot: TEST_DIR,
+    });
+    expect(result).toEqual({ title: 'Test Issue', state: 'open' });
+  });
+
+  it('prefers explicit forgeConfig over workspaceRoot loading', async () => {
+    const result = await executeForgeCommand('issue-view', {}, {
+      workspaceRoot: TEST_DIR,
+      forgeConfig: { 'issue-view': join(MOCK_SCRIPTS_DIR, 'json-array.sh') },
+    });
+    // Should use the explicit config (array output), not the workspaceRoot config (object output)
+    expect(Array.isArray(result)).toBe(true);
   });
 });
 
+// =============================================================================
+// Sync execution with mock scripts
+// =============================================================================
+
 describe('executeForgeCommandSync', () => {
+  it('parses valid JSON output', () => {
+    const result = executeForgeCommandSync('issue-view', {}, {
+      forgeConfig: { 'issue-view': join(MOCK_SCRIPTS_DIR, 'json-output.sh') },
+    });
+    expect(result).toEqual({ title: 'Test Issue', state: 'open' });
+  });
+
   it('returns null for unknown concepts', () => {
     const result = executeForgeCommandSync('nonexistent-concept', {});
     expect(result).toBeNull();
   });
 
-  it('returns null or string for user-identity', () => {
-    // If gh is available and authenticated, returns username string
-    // If gh is not available, returns null (graceful degradation)
-    const result = executeForgeCommandSync('user-identity', {});
-    if (result !== null) {
-      expect(typeof result).toBe('string');
-      expect((result as string).length).toBeGreaterThan(0);
-    }
+  it('returns null on non-zero exit code', () => {
+    const result = executeForgeCommandSync('issue-view', {}, {
+      forgeConfig: { 'issue-view': join(MOCK_SCRIPTS_DIR, 'fail.sh') },
+    });
+    expect(result).toBeNull();
+  });
+
+  it('passes environment variables', () => {
+    const result = executeForgeCommandSync('issue-view', {
+      CODEV_ISSUE_ID: 'TEST-99',
+    }, {
+      forgeConfig: { 'issue-view': join(MOCK_SCRIPTS_DIR, 'echo-env.sh') },
+    }) as { issue_id: string };
+
+    expect(result).toBeTruthy();
+    expect(result.issue_id).toBe('TEST-99');
+  });
+
+  it('returns raw string when raw option is true', () => {
+    const result = executeForgeCommandSync('pr-diff', {}, {
+      forgeConfig: { 'pr-diff': join(MOCK_SCRIPTS_DIR, 'diff-output.sh') },
+      raw: true,
+    });
+    expect(typeof result).toBe('string');
+    expect(result).toContain('diff --git');
   });
 });
 
@@ -148,7 +297,7 @@ describe('executeForgeCommandSync', () => {
 // =============================================================================
 
 describe('getKnownConcepts', () => {
-  it('returns all known concept names', () => {
+  it('returns all 15 known concept names', () => {
     const concepts = getKnownConcepts();
     expect(concepts).toContain('issue-view');
     expect(concepts).toContain('pr-list');
@@ -176,6 +325,16 @@ describe('getDefaultCommand', () => {
     expect(cmd).toContain('$CODEV_ISSUE_ID');
   });
 
+  it('includes CODEV_SINCE_DATE in recently-closed default', () => {
+    const cmd = getDefaultCommand('recently-closed');
+    expect(cmd).toContain('$CODEV_SINCE_DATE');
+  });
+
+  it('includes CODEV_SINCE_DATE in recently-merged default', () => {
+    const cmd = getDefaultCommand('recently-merged');
+    expect(cmd).toContain('$CODEV_SINCE_DATE');
+  });
+
   it('returns null for unknown concepts', () => {
     expect(getDefaultCommand('nonexistent')).toBeNull();
   });
@@ -187,48 +346,38 @@ describe('getDefaultCommand', () => {
 
 describe('validateForgeConfig', () => {
   it('reports OK for valid overrides of known concepts', () => {
-    const results = validateForgeConfig({
-      'pr-list': 'glab mr list --json id,title',
-    });
+    const results = validateForgeConfig({ 'pr-list': 'glab mr list --json id,title' });
     expect(results).toHaveLength(1);
     expect(results[0].status).toBe('ok');
     expect(results[0].concept).toBe('pr-list');
   });
 
   it('reports disabled for null concepts', () => {
-    const results = validateForgeConfig({
-      'team-activity': null,
-      'on-it-timestamps': null,
-    });
+    const results = validateForgeConfig({ 'team-activity': null, 'on-it-timestamps': null });
     expect(results).toHaveLength(2);
     expect(results.every(r => r.status === 'disabled')).toBe(true);
   });
 
   it('reports unknown_concept for unrecognized concept names', () => {
-    const results = validateForgeConfig({
-      'made-up-concept': 'some command',
-    });
+    const results = validateForgeConfig({ 'made-up-concept': 'some command' });
     expect(results).toHaveLength(1);
     expect(results[0].status).toBe('unknown_concept');
   });
 
   it('reports empty_command for empty string commands', () => {
-    const results = validateForgeConfig({
-      'pr-list': '',
-    });
+    const results = validateForgeConfig({ 'pr-list': '' });
     expect(results).toHaveLength(1);
     expect(results[0].status).toBe('empty_command');
   });
 
   it('handles mixed config with multiple statuses', () => {
     const results = validateForgeConfig({
-      'pr-list': 'glab mr list',        // ok
-      'team-activity': null,             // disabled
-      'unknown-thing': 'command',        // unknown_concept
-      'issue-comment': '',               // empty_command
+      'pr-list': 'glab mr list',
+      'team-activity': null,
+      'unknown-thing': 'command',
+      'issue-comment': '',
     });
     expect(results).toHaveLength(4);
-
     const statuses = results.map(r => r.status);
     expect(statuses).toContain('ok');
     expect(statuses).toContain('disabled');
@@ -243,15 +392,22 @@ describe('validateForgeConfig', () => {
 
 describe('loadForgeConfig', () => {
   it('returns null when no af-config.json exists', () => {
-    const result = loadForgeConfig('/nonexistent/path');
-    expect(result).toBeNull();
+    expect(loadForgeConfig('/nonexistent/path')).toBeNull();
+  });
+
+  it('returns forge section from af-config.json', () => {
+    const config = loadForgeConfig(TEST_DIR);
+    expect(config).toBeTruthy();
+    expect(config!['team-activity']).toBeNull();
+    expect(config!['issue-view']).toContain('json-output.sh');
   });
 
   it('returns null when af-config.json has no forge section', () => {
-    // Would need a temp file for this test. The function handles
-    // missing forge section by returning null.
-    // For now, verify the path handling works
-    const result = loadForgeConfig('/tmp');
-    expect(result).toBeNull();
+    // Create a temp config without forge section
+    const noForgeDir = join(TEST_DIR, 'no-forge');
+    mkdirSync(noForgeDir, { recursive: true });
+    writeFileSync(join(noForgeDir, 'af-config.json'), JSON.stringify({ shell: {} }));
+    expect(loadForgeConfig(noForgeDir)).toBeNull();
+    rmSync(noForgeDir, { recursive: true, force: true });
   });
 });

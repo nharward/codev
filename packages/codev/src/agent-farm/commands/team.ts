@@ -8,13 +8,16 @@ import { execSync } from 'node:child_process';
 import * as path from 'node:path';
 import { loadTeamMembers, appendMessage } from '../../lib/team.js';
 import { findWorkspaceRoot } from '../utils/index.js';
+import { executeForgeCommandSync } from '../../lib/forge.js';
 
 /**
- * Detect the current user's GitHub handle or git username.
+ * Detect the current user's forge handle or git username.
+ * Uses the `user-identity` forge concept command (default: gh api user).
  */
 function detectAuthor(cwd?: string): string {
   try {
-    return execSync('gh api user --jq .login', { encoding: 'utf-8', cwd, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const result = executeForgeCommandSync('user-identity', {}, { cwd });
+    if (result && typeof result === 'string') return result;
   } catch {
     // Fall back to git config
   }

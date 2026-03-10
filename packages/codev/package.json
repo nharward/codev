@@ -8,6 +8,7 @@
     "porch": "./bin/porch.js",
     "af": "./bin/af.js",
     "consult": "./bin/consult.js",
+    "team": "./bin/team.js",
     "generate-image": "./bin/generate-image.js"
   },
   "files": [

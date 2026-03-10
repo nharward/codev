@@ -650,7 +650,7 @@ packages/codev/dashboard/
 - `useTeam(isActive)` hook manages fetch lifecycle
 - Graceful degradation: shows member cards without GitHub data when API unavailable
 - Backend: `team.ts` (parsing), `team-github.ts` (GraphQL), `MessageChannel` interface for extensibility
-- CLI: `af team list`, `af team message`, `af team update` (hourly cron via `.af-cron/team-update.yaml`)
+- CLI: `team list`, `team message`, `team update`, `team add` (standalone `team` CLI; `af team` is deprecated). Hourly cron via `.af-cron/team-update.yaml`
 
 **Responsive Design**:
 - Desktop (>768px): Split-pane layout with file browser sidebar
@@ -898,13 +898,13 @@ This is what gets distributed to users when they install Codev:
 
 ### 3. `packages/codev/` - The npm Package
 This is the `@cluesmith/codev` npm package containing all CLI tools:
-- **Purpose**: Published npm package with codev, af, and consult CLIs
+- **Purpose**: Published npm package with codev, af, consult, team, and porch CLIs
 - **Contains**:
   - `src/` - TypeScript source code
   - `src/agent-farm/` - Agent Farm orchestration (af command)
   - `src/commands/` - codev subcommands (init, adopt, doctor, update, eject, tower)
   - `src/commands/consult/` - Multi-agent consultation (consult command)
-  - `bin/` - CLI entry points (codev.js, af.js, consult.js)
+  - `bin/` - CLI entry points (codev.js, af.js, consult.js, team.js, porch.js)
   - `skeleton/` - Embedded copy of codev-skeleton (built during `npm run build`)
   - `templates/` - HTML templates for Agent Farm (`af`) dashboard and annotator
   - `dist/` - Compiled JavaScript
@@ -965,7 +965,9 @@ codev/                                  # Project root (git repository)
 │   ├── bin/                            # CLI entry points
 │   │   ├── codev.js                    # codev command
 │   │   ├── af.js                       # af command
-│   │   └── consult.js                  # consult command
+│   │   ├── consult.js                  # consult command
+│   │   ├── team.js                     # team command
+│   │   └── porch.js                    # porch command
 │   ├── skeleton/                       # Embedded codev-skeleton (built)
 │   ├── templates/                      # HTML templates
 │   │   ├── tower.html                  # Multi-project overview
@@ -1262,7 +1264,7 @@ See the [Port System](#port-system) section above for details on the global regi
 
 #### Global CLI Commands
 
-The `af`, `consult`, and `codev` commands are installed globally via `npm install -g @cluesmith/codev` and work from any directory. No aliases or local scripts needed.
+The `af`, `consult`, `codev`, `team`, and `porch` commands are installed globally via `npm install -g @cluesmith/codev` and work from any directory. No aliases or local scripts needed.
 
 ### 4. Test Infrastructure
 

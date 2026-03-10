@@ -12,6 +12,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { executeForgeCommand, type ForgeConfig } from './forge.js';
+import { getRepoInfo } from './team-github.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -290,19 +291,12 @@ export async function fetchOnItTimestamps(
   }
 
   // Default path: build GraphQL query for gh api graphql
-  // Get repo owner/name for GraphQL query
-  let owner: string;
-  let repoName: string;
-  try {
-    const { stdout } = await execFileAsync('gh', [
-      'repo', 'view', '--json', 'owner,name',
-    ], { cwd });
-    const repo = JSON.parse(stdout);
-    owner = repo.owner.login;
-    repoName = repo.name;
-  } catch {
+  // Get repo owner/name from git remote
+  const repo = await getRepoInfo(cwd);
+  if (!repo) {
     return result; // Can't determine repo, skip gracefully
   }
+  const { owner, name: repoName } = repo;
 
   const BATCH_SIZE = 50;
 

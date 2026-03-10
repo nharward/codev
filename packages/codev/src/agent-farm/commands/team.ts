@@ -5,8 +5,9 @@
  */
 
 import { execSync } from 'node:child_process';
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { loadTeamMembers, appendMessage } from '../../lib/team.js';
+import { loadTeamMembers, appendMessage, isValidGitHubHandle } from '../../lib/team.js';
 import { findWorkspaceRoot } from '../utils/index.js';
 
 /**
@@ -58,6 +59,39 @@ export async function teamList(options: { cwd?: string }): Promise<void> {
   for (const w of result.warnings) {
     console.warn(`⚠ ${w}`);
   }
+}
+
+export async function teamAdd(options: { handle: string; name?: string; role?: string; cwd?: string }): Promise<void> {
+  const root = findWorkspaceRoot(options.cwd);
+  const handle = options.handle.toLowerCase();
+
+  if (!isValidGitHubHandle(handle)) {
+    throw new Error(`Invalid GitHub handle '${options.handle}'`);
+  }
+
+  const peopleDir = path.join(root, 'codev', 'team', 'people');
+  const filePath = path.join(peopleDir, `${handle}.md`);
+
+  // Check if file already exists
+  try {
+    await fs.access(filePath);
+    throw new Error(`Team member '${handle}' already exists at codev/team/people/${handle}.md`);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('already exists')) {
+      throw err;
+    }
+    // File doesn't exist — proceed
+  }
+
+  // Ensure directory exists
+  await fs.mkdir(peopleDir, { recursive: true });
+
+  const memberName = options.name || handle;
+  const memberRole = options.role || 'Team Member';
+  const content = `---\nname: ${memberName}\ngithub: ${handle}\nrole: ${memberRole}\n---\n`;
+
+  await fs.writeFile(filePath, content, 'utf-8');
+  console.log(`Added team member '${handle}' at codev/team/people/${handle}.md`);
 }
 
 export async function teamMessage(options: { text: string; author?: string; cwd?: string }): Promise<void> {

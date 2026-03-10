@@ -12,7 +12,8 @@ import { loadMessages } from '../lib/team.js';
 
 // We test the command logic by importing the functions directly.
 // The CLI wiring in cli.ts is tested via the integration/E2E layer.
-import { teamList, teamMessage } from '../agent-farm/commands/team.js';
+import { teamList, teamMessage, teamAdd } from '../agent-farm/commands/team.js';
+import { parseFrontmatter } from '../lib/team.js';
 
 // =============================================================================
 // Helpers
@@ -148,5 +149,88 @@ describe('teamMessage', () => {
     expect(result.items).toHaveLength(1);
     // Author should be a non-empty string (from gh or git config)
     expect(result.items[0].author.length).toBeGreaterThan(0);
+  });
+});
+
+// =============================================================================
+// teamAdd (Spec 599)
+// =============================================================================
+
+describe('teamAdd', () => {
+  it('creates a member file with correct frontmatter', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await teamAdd({ handle: 'jdoe', cwd: tmpDir });
+
+    const filePath = path.join(tmpDir, 'codev', 'team', 'people', 'jdoe.md');
+    const content = await fs.readFile(filePath, 'utf-8');
+    const fm = parseFrontmatter(content);
+    expect(fm).not.toBeNull();
+    expect(fm!.name).toBe('jdoe');
+    expect(fm!.github).toBe('jdoe');
+    expect(fm!.role).toBe('Team Member');
+  });
+
+  it('normalizes handle to lowercase', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await teamAdd({ handle: 'JaneDoe', cwd: tmpDir });
+
+    const filePath = path.join(tmpDir, 'codev', 'team', 'people', 'janedoe.md');
+    const content = await fs.readFile(filePath, 'utf-8');
+    const fm = parseFrontmatter(content);
+    expect(fm!.github).toBe('janedoe');
+  });
+
+  it('uses custom --name and --role flags', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await teamAdd({ handle: 'jdoe', name: 'Jane Doe', role: 'Developer', cwd: tmpDir });
+
+    const filePath = path.join(tmpDir, 'codev', 'team', 'people', 'jdoe.md');
+    const content = await fs.readFile(filePath, 'utf-8');
+    const fm = parseFrontmatter(content);
+    expect(fm!.name).toBe('Jane Doe');
+    expect(fm!.role).toBe('Developer');
+  });
+
+  it('fails if member already exists', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await teamAdd({ handle: 'jdoe', cwd: tmpDir });
+    await expect(teamAdd({ handle: 'jdoe', cwd: tmpDir }))
+      .rejects.toThrow("Team member 'jdoe' already exists at codev/team/people/jdoe.md");
+  });
+
+  it('fails on invalid GitHub handle', async () => {
+    await expect(teamAdd({ handle: '../bad', cwd: tmpDir }))
+      .rejects.toThrow("Invalid GitHub handle '../bad'");
+  });
+
+  it('fails on handle starting with hyphen', async () => {
+    await expect(teamAdd({ handle: '-invalid', cwd: tmpDir }))
+      .rejects.toThrow("Invalid GitHub handle '-invalid'");
+  });
+
+  it('creates people directory if it does not exist', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    // Remove the people directory
+    await fs.rm(path.join(tmpDir, 'codev', 'team', 'people'), { recursive: true });
+
+    await teamAdd({ handle: 'newuser', cwd: tmpDir });
+
+    const filePath = path.join(tmpDir, 'codev', 'team', 'people', 'newuser.md');
+    const content = await fs.readFile(filePath, 'utf-8');
+    expect(content).toContain('name: newuser');
+  });
+
+  it('prints confirmation message on success', async () => {
+    const logs: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args) => logs.push(args.join(' ')));
+
+    await teamAdd({ handle: 'jdoe', cwd: tmpDir });
+
+    expect(logs.some(l => l.includes("Added team member 'jdoe'"))).toBe(true);
   });
 });

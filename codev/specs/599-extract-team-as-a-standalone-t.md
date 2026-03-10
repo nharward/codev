@@ -57,9 +57,10 @@ github: <github-handle>
 role: Team Member
 ---
 ```
-- Fails if the file already exists (no overwriting)
-- Optionally accepts `--name` and `--role` flags to populate frontmatter
-- Validates the handle format (alphanumeric + hyphens, per GitHub rules)
+- Normalizes the handle to lowercase for the filename (GitHub handles are case-insensitive)
+- Fails if the file already exists (no overwriting) — exits with code 1 and message: `Error: Team member '<handle>' already exists at codev/team/people/<handle>.md`
+- Optionally accepts `--name` and `--role` flags to populate frontmatter; if `--name` is omitted, uses the handle as the `name` field
+- Validates the handle format using existing `isValidGitHubHandle()` — on failure exits with code 1 and message: `Error: Invalid GitHub handle '<handle>'`
 - Creates the `codev/team/people/` directory if it doesn't exist
 
 ### R3: `af team` deprecation
@@ -106,6 +107,7 @@ New file `codev/resources/commands/team.md` following the pattern of `agent-farm
 
 ### Design Constraints
 - The `team` CLI should work from any directory within a codev project (same workspace detection as `af`)
+- When run outside a codev workspace (no `codev/` directory found), all commands fail immediately with: `Error: Not inside a Codev workspace. Run from a project that has a codev/ directory.` (exit code 1)
 - No new dependencies required — uses `commander`, `js-yaml`, and Node builtins already in the project
 
 ## Assumptions
@@ -156,6 +158,10 @@ Register a `team` command group in `src/cli.ts` (the main CLI router) with the f
 7. `team add "../bad"` — fails validation
 8. `af team list` — prints deprecation warning, then lists members
 
+### Error Handling Tests
+1. `team list` outside a codev workspace — fails with "Not inside a Codev workspace" error
+2. `team add` with non-writable directory — fails with filesystem error (exit code 1)
+
 ### Non-Functional Tests
 1. CLI help output shows all commands and options
 2. Exit codes: 0 on success, 1 on error
@@ -176,3 +182,18 @@ Register a `team` command group in `src/cli.ts` (the main CLI router) with the f
 | Breaking `af team` for existing users | Low | Medium | Keep `af team` working with deprecation warning |
 | Cron job breaks after rename | Low | Low | Update `.af-cron/team-update.yaml` in same PR |
 | Import path changes break tests | Low | Low | Library code stays in place; only CLI wiring changes |
+
+## Expert Consultation
+
+**Date**: 2026-03-09
+**Models Consulted**: Gemini, Codex, Claude
+
+**Results**:
+- **Gemini**: APPROVE (high confidence). Suggested moving handler implementations to `src/commands/team/` for cleaner separation from `agent-farm`. (Noted but not required — library code is already cleanly separated in `src/lib/team.ts`.)
+- **Codex**: REQUEST_CHANGES (medium confidence). Requested clarifications on: (1) behavior outside a codev workspace, (2) handle normalization/casing, (3) error messaging and exit codes. All three addressed in this revision.
+- **Claude**: APPROVE (high confidence). Verified codebase claims. Noted handle casing as a minor observation (addressed).
+
+**Changes made from consultation**:
+- R2: Added lowercase normalization for filenames, explicit error messages and exit codes for validation failures and duplicate members
+- Design Constraints: Added workspace-not-found error behavior
+- Test Scenarios: Added error handling test cases for outside-workspace and non-writable directory

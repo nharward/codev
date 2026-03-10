@@ -15,6 +15,7 @@ import {
   executeForgeCommand,
   executeForgeCommandSync,
   getKnownConcepts,
+  getKnownProviders,
   getDefaultCommand,
   validateForgeConfig,
   loadForgeConfig,
@@ -409,5 +410,88 @@ describe('loadForgeConfig', () => {
     writeFileSync(join(noForgeDir, 'af-config.json'), JSON.stringify({ shell: {} }));
     expect(loadForgeConfig(noForgeDir)).toBeNull();
     rmSync(noForgeDir, { recursive: true, force: true });
+  });
+});
+
+// =============================================================================
+// Provider presets
+// =============================================================================
+
+describe('provider presets', () => {
+  it('returns known providers', () => {
+    const providers = getKnownProviders();
+    expect(providers).toContain('github');
+    expect(providers).toContain('gitlab');
+    expect(providers).toContain('gitea');
+  });
+
+  it('uses provider preset when no manual override', () => {
+    const config = { provider: 'gitlab' };
+    const cmd = getForgeCommand('pr-merge', config);
+    expect(cmd).toContain('glab');
+  });
+
+  it('manual override takes precedence over provider preset', () => {
+    const config = { provider: 'gitlab', 'pr-merge': 'my-custom-merge $CODEV_PR_NUMBER' };
+    const cmd = getForgeCommand('pr-merge', config);
+    expect(cmd).toBe('my-custom-merge $CODEV_PR_NUMBER');
+  });
+
+  it('falls back to default when provider does not define concept', () => {
+    // github preset is DEFAULT_COMMANDS, so any concept returns the default
+    const config = { provider: 'github' };
+    const cmd = getForgeCommand('issue-view', config);
+    expect(cmd).toContain('gh issue view');
+  });
+
+  it('returns null for concepts disabled in provider preset', () => {
+    const config = { provider: 'gitlab' };
+    // team-activity is null in gitlab preset
+    const cmd = getForgeCommand('team-activity', config);
+    expect(cmd).toBeNull();
+  });
+
+  it('validates unknown provider', () => {
+    const results = validateForgeConfig({ provider: 'bitbucket' });
+    expect(results[0].status).toBe('unknown_concept');
+    expect(results[0].message).toContain('bitbucket');
+  });
+
+  it('validates known provider', () => {
+    const results = validateForgeConfig({ provider: 'gitlab' });
+    expect(results[0].status).toBe('provider');
+    expect(results[0].message).toContain('gitlab');
+  });
+});
+
+// =============================================================================
+// Graceful degradation (no gh CLI)
+// =============================================================================
+
+describe('graceful degradation when command not found', () => {
+  it('executeForgeCommand returns null when command fails', async () => {
+    // Use a command that doesn't exist — simulates "no gh installed"
+    const result = await executeForgeCommand('issue-view', {
+      CODEV_ISSUE_ID: '42',
+    }, {
+      forgeConfig: { 'issue-view': 'nonexistent-cli-tool-that-does-not-exist view 42' },
+    });
+    expect(result).toBeNull();
+  });
+
+  it('executeForgeCommandSync returns null when command fails', () => {
+    const result = executeForgeCommandSync('issue-view', {
+      CODEV_ISSUE_ID: '42',
+    }, {
+      forgeConfig: { 'issue-view': 'nonexistent-cli-tool-that-does-not-exist view 42' },
+    });
+    expect(result).toBeNull();
+  });
+
+  it('disabled concepts return null immediately without executing', async () => {
+    const result = await executeForgeCommand('team-activity', {}, {
+      forgeConfig: { 'team-activity': null },
+    });
+    expect(result).toBeNull();
   });
 });

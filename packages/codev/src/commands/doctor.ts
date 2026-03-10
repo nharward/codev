@@ -640,7 +640,7 @@ export async function doctor(): Promise<number> {
       const validationResults = validateForgeConfig(forgeConfig);
       let forgeOk = true;
       for (const r of validationResults) {
-        if (r.status === 'ok') {
+        if (r.status === 'ok' || r.status === 'provider') {
           console.log(`  ${chalk.green('✓')} ${r.message}`);
         } else if (r.status === 'disabled') {
           console.log(`  ${chalk.dim('○')} ${r.message}`);

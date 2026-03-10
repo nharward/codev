@@ -84,13 +84,13 @@ function mockGhOutput(responses: Record<string, string>, onItTimestamps?: Record
     return Promise.resolve(null);
   });
 
-  // Mock direct execFile for gh repo view (still used by fetchOnItTimestamps default path)
+  // Mock direct execFile for git remote get-url (used by getRepoInfo for GraphQL repo context)
   execFileMock.mockImplementation((_cmd: string, args: string[]) => {
     const argsStr = args.join(' ');
 
-    // gh repo view --json owner,name (for GraphQL repo context)
-    if (argsStr.includes('repo') && argsStr.includes('view')) {
-      return Promise.resolve({ stdout: JSON.stringify({ owner: { login: 'test' }, name: 'repo' }) });
+    // git remote get-url origin (for repo owner/name)
+    if (argsStr.includes('remote') && argsStr.includes('get-url')) {
+      return Promise.resolve({ stdout: 'https://github.com/test/repo.git\n' });
     }
 
     return Promise.resolve({ stdout: '[]' });
@@ -706,8 +706,8 @@ describe('fetchOnItTimestamps', () => {
   it('routes through on-it-timestamps concept command', async () => {
     execFileMock.mockImplementation((_cmd: string, args: string[]) => {
       const argsStr = args.join(' ');
-      if (argsStr.includes('repo') && argsStr.includes('view')) {
-        return Promise.resolve({ stdout: JSON.stringify({ owner: { login: 'test' }, name: 'repo' }) });
+      if (argsStr.includes('remote') && argsStr.includes('get-url')) {
+        return Promise.resolve({ stdout: 'https://github.com/test/repo.git\n' });
       }
       return Promise.resolve({ stdout: '[]' });
     });
@@ -747,8 +747,8 @@ describe('fetchOnItTimestamps', () => {
   it('deduplicates issue numbers', async () => {
     execFileMock.mockImplementation((_cmd: string, args: string[]) => {
       const argsStr = args.join(' ');
-      if (argsStr.includes('repo') && argsStr.includes('view')) {
-        return Promise.resolve({ stdout: JSON.stringify({ owner: { login: 'test' }, name: 'repo' }) });
+      if (argsStr.includes('remote') && argsStr.includes('get-url')) {
+        return Promise.resolve({ stdout: 'https://github.com/test/repo.git\n' });
       }
       return Promise.resolve({ stdout: '[]' });
     });
@@ -774,8 +774,8 @@ describe('fetchOnItTimestamps', () => {
   it('handles concept command failure gracefully', async () => {
     execFileMock.mockImplementation((_cmd: string, args: string[]) => {
       const argsStr = args.join(' ');
-      if (argsStr.includes('repo') && argsStr.includes('view')) {
-        return Promise.resolve({ stdout: JSON.stringify({ owner: { login: 'test' }, name: 'repo' }) });
+      if (argsStr.includes('remote') && argsStr.includes('get-url')) {
+        return Promise.resolve({ stdout: 'https://github.com/test/repo.git\n' });
       }
       return Promise.resolve({ stdout: '[]' });
     });

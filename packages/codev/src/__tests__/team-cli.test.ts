@@ -240,21 +240,36 @@ describe('teamAdd', () => {
 // =============================================================================
 
 describe('af team deprecation', () => {
-  it('af team list prints deprecation warning on stderr', async () => {
-    // We test this by verifying the af CLI code has the deprecation warning.
-    // The actual deprecation wrapper is in agent-farm/cli.ts — we verify the
-    // pattern works by importing and calling the function directly (which is
-    // what the af CLI action does after printing the warning).
+  it('af team list emits deprecation warning via runAgentFarm', async () => {
     const warns: string[] = [];
     vi.spyOn(console, 'warn').mockImplementation((...args) => warns.push(args.join(' ')));
     vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    // Simulate what af team list does: warn then call teamList
-    console.warn('⚠ `af team` is deprecated. Use `team list` instead.');
-    await teamList({ cwd: tmpDir });
+    // Import and call runAgentFarm which executes the actual Commander action
+    const { runAgentFarm } = await import('../agent-farm/cli.js');
+    await runAgentFarm(['team', 'list', '--help']).catch(() => {});
+
+    // --help exits without running the action, so we test by verifying the
+    // command is registered. For the actual warning, we invoke the list action:
+    // Mock process.cwd to point to our temp dir so teamList finds codev/
+    vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    await runAgentFarm(['team', 'list']);
 
     expect(warns.some(w => w.includes('deprecated'))).toBe(true);
     expect(warns.some(w => w.includes('team list'))).toBe(true);
+  });
+
+  it('af team message emits deprecation warning via runAgentFarm', async () => {
+    const warns: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...args) => warns.push(args.join(' ')));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+
+    const { runAgentFarm } = await import('../agent-farm/cli.js');
+    await runAgentFarm(['team', 'message', 'test deprecation']);
+
+    expect(warns.some(w => w.includes('deprecated'))).toBe(true);
+    expect(warns.some(w => w.includes('team message'))).toBe(true);
   });
 });
 
